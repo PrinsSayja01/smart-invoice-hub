@@ -1,21 +1,17 @@
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { 
-  FileText, 
-  Upload, 
-  Bot, 
-  Shield, 
-  BarChart3, 
-  Zap, 
-  CheckCircle2, 
-  ArrowRight, 
-  Sparkles 
+import {
+  FileText,
+  Upload,
+  Bot,
+  Shield,
+  BarChart3,
+  Zap,
+  CheckCircle2,
+  ArrowRight,
+  Sparkles,
 } from 'lucide-react';
-import { FcGoogle } from 'react-icons/fc'; // Install react-icons if not already: npm install react-icons
-
-// Import Google OAuth hook (we'll create a custom hook for auth)
-// This would typically be in a separate auth context or hook
 
 const features = [
   {
@@ -48,23 +44,7 @@ const agents = [
   { name: 'Reporting Agent', desc: 'Generates insights' },
 ];
 
-// Custom hook for authentication (simplified - in real app, this would be more complex)
-const useAuth = () => {
-  // This is a simplified version. In real app, use proper auth context
-  const handleGoogleLogin = async () => {
-    // This would typically use @react-oauth/google's useGoogleLogin hook
-    // For now, redirect to backend endpoint that handles Google OAuth
-    window.location.href = `${import.meta.env.VITE_API_URL || 'http://localhost:3000'}/api/auth/google`;
-  };
-
-  return {
-    handleGoogleLogin,
-  };
-};
-
 export default function Index() {
-  const { handleGoogleLogin } = useAuth();
-
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -77,13 +57,8 @@ export default function Index() {
             <span className="font-display text-xl font-bold">Invoice AI</span>
           </div>
           <div className="flex items-center gap-4">
-            <Button 
-              variant="outline" 
-              className="flex items-center gap-2"
-              onClick={handleGoogleLogin}
-            >
-              <FcGoogle className="h-4 w-4" />
-              Google Sign In
+            <Button variant="ghost" asChild>
+              <Link to="/auth">Sign In</Link>
             </Button>
             <Button asChild className="gradient-primary">
               <Link to="/auth">Get Started</Link>
@@ -124,16 +99,7 @@ export default function Index() {
                   <ArrowRight className="ml-2 h-5 w-5" />
                 </Link>
               </Button>
-              <Button 
-                size="lg" 
-                variant="outline" 
-                className="text-lg px-8 flex items-center gap-2"
-                onClick={handleGoogleLogin}
-              >
-                <FcGoogle className="h-5 w-5" />
-                Continue with Google
-              </Button>
-              <Button size="lg" variant="ghost" asChild className="text-lg px-8">
+              <Button size="lg" variant="outline" asChild className="text-lg px-8">
                 <a href="#features">See How It Works</a>
               </Button>
             </div>
@@ -244,71 +210,6 @@ export default function Index() {
         </div>
       </section>
 
-      {/* Authentication Options Section */}
-      <section className="py-20 px-4 bg-muted/50">
-        <div className="container mx-auto max-w-4xl">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl md:text-4xl font-display font-bold mb-4">
-              Get Started in Seconds
-            </h2>
-            <p className="text-lg text-muted-foreground">
-              Choose your preferred sign-in method
-            </p>
-          </div>
-          
-          <div className="grid md:grid-cols-3 gap-6">
-            <Card className="p-6 text-center hover:border-primary/50 transition-all cursor-pointer group">
-              <div 
-                className="flex flex-col items-center gap-4"
-                onClick={handleGoogleLogin}
-              >
-                <div className="p-3 rounded-xl bg-white border border-gray-200 group-hover:shadow-md transition-shadow">
-                  <FcGoogle className="h-8 w-8" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-lg mb-2">Google</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Sign in with your Google account
-                  </p>
-                </div>
-              </div>
-            </Card>
-            
-            <Card className="p-6 text-center hover:border-primary/50 transition-all group">
-              <Link to="/auth" className="flex flex-col items-center gap-4">
-                <div className="p-3 rounded-xl bg-primary/10 group-hover:bg-primary/20 transition-colors">
-                  <FileText className="h-8 w-8 text-primary" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-lg mb-2">Email</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Sign up with email and password
-                  </p>
-                </div>
-              </Link>
-            </Card>
-            
-            <Card className="p-6 text-center hover:border-primary/50 transition-all group">
-              <Link to="/auth" className="flex flex-col items-center gap-4">
-                <div className="p-3 rounded-xl bg-primary/10 group-hover:bg-primary/20 transition-colors">
-                  <Shield className="h-8 w-8 text-primary" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-lg mb-2">SSO</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Enterprise Single Sign-On
-                  </p>
-                </div>
-              </Link>
-            </Card>
-          </div>
-          
-          <div className="text-center mt-8 text-sm text-muted-foreground">
-            <p>No credit card required • 14-day free trial • Cancel anytime</p>
-          </div>
-        </div>
-      </section>
-
       {/* CTA Section */}
       <section className="py-20 px-4">
         <div className="container mx-auto">
@@ -320,23 +221,12 @@ export default function Index() {
               Join companies using Invoice AI to save time, reduce errors, and gain insights
               from their financial documents.
             </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Button 
-                size="lg" 
-                variant="secondary" 
-                className="text-lg px-8 flex items-center gap-2"
-                onClick={handleGoogleLogin}
-              >
-                <FcGoogle className="h-5 w-5" />
-                Continue with Google
-              </Button>
-              <Button size="lg" variant="outline" asChild className="text-lg px-8 bg-white/10 text-white hover:bg-white/20">
-                <Link to="/auth">
-                  Other Sign Up Options
-                  <ArrowRight className="ml-2 h-5 w-5" />
-                </Link>
-              </Button>
-            </div>
+            <Button size="lg" variant="secondary" asChild className="text-lg px-8">
+              <Link to="/auth">
+                Get Started Free
+                <ArrowRight className="ml-2 h-5 w-5" />
+              </Link>
+            </Button>
           </Card>
         </div>
       </section>
