@@ -1,6 +1,6 @@
 # Invoice AI - Smart Invoice Hub
 
-Welcome to Invoice AI! This is a simple tool to help people manage invoices easily. You can upload invoices, extract data from them, check for problems, and get reports. It's built to show what the full product could be like. The live site is at: https://smart-invoice-hub-three.vercel.app/
+Welcome to Invoice AI! This is a simple tool to help people manage invoices easily. You can upload invoices, extract data from them, check for problems, and get reports. It's built to show what the full product could be like. The live site is at: [https://smart-invoice-hub-three.vercel.app/](https://smart-invoice-hub01.vercel.app/)
 
 This README explains the project in easy words. It's for anyone who wants to know how it works, set it up, or try it.
 
