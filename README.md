@@ -1,73 +1,118 @@
-# Welcome to your Lovable project
+# Invoice AI - Smart Invoice Hub
 
-## Project info
+Welcome to Invoice AI! This is a simple tool to help people manage invoices easily. You can upload invoices, extract data from them, check for problems, and get reports. It's built to show what the full product could be like. The live site is at: https://smart-invoice-hub-three.vercel.app/
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+This README explains the project in easy words. It's for anyone who wants to know how it works, set it up, or try it.
 
-## How can I edit this code?
+## What is Invoice AI?
 
-There are several ways of editing your application.
+Invoice AI is a web app that helps users handle invoices with AI. It lets you sign up, upload files, process them, and ask questions to an AI chat. The goal is to make invoice work faster and safer. This version is ready for real users to test. It has login, invoice tools, AI helpers, and reports. It's hosted for free on Vercel.
 
-**Use Lovable**
+At the end, we give:
+- A live URL: https://smart-invoice-hub-three.vercel.app/
+- Demo user: Use Google to log in
+- Short setup guide: See below.
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+## Main Features
 
-Changes made via Lovable will be committed automatically to this repo.
+### 1. Login and User Accounts
 
-**Use your preferred IDE**
+- Sign in or sign up with Google (easy and fast).
+- You can also use email and password if you want.
+- Each user gets:
+  - A profile page to see your info.
+  - A dashboard to check how much you use the app.
+  - Track tokens or usage (if we add limits).
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+### 2. User Dashboard
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+The main page shows:
+- How many invoices you uploaded in total.
+- Invoices processed this month.
+- Any flagged (suspicious) invoices.
+- Quick view of compliance (rules check).
+- Buttons to:
+  - Upload a new invoice.
+  - See reports.
+  - Chat with AI helper.
 
-Follow these steps:
+## How to Process Invoices
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+### Upload Invoices
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+- Upload PDFs or images (JPG/PNG).
+- Use drag and drop for easy upload.
+- Bonus (if added): Upload from email or Google Drive.
 
-# Step 3: Install the necessary dependencies.
-npm i
+### Extract Data
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
+After upload:
+- The app reads the invoice with OCR (text from image).
+- It finds:
+  - Vendor name.
+  - Invoice number.
+  - Date.
+  - Total amount.
+  - Tax or VAT.
+  - Currency.
+- Shows the data to you.
+- You can fix mistakes by hand before saving.
+  
+Note: If real OCR is hard, we use a fake one, but the whole process works.
 
-**Edit a file directly in GitHub**
+## AI Helpers and Automation
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+This is the special part! We use AI agents (like smart rules or AI models) to help.
 
-**Use GitHub Codespaces**
+### The AI Workflow
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+1. **Ingestion Agent**: Checks the file and sends it to OCR.
+2. **Classification Agent**: Says what type of invoice it is (services, goods, medical, or other). Also checks the language.
+3. **Fraud Detection Agent**: Looks for problems like duplicates, weird amounts, or missing IDs. Gives a risk score: low, medium, or high.
+4. **Tax Agent**: Checks tax rules (like VAT in EU or ZATCA). Says if it's okay or needs review. Uses simple rules.
+5. **Reporting Agent**: Makes data ready for reports.
 
-## What technologies are used for this project?
+## AI Chatbot
 
-This project is built with:
+Talk to the AI like a friend!
+- Ask things like: "How many invoices this month?" or "Show suspicious ones."
+- Or: "Make a tax report" or "Who is my top vendor?"
+- The chat uses real data from your account.
+- We use AI like OpenAI or others, or fake answers with real info.
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+## Reports and Exports
 
-## How can I deploy this project?
+- See summary reports: Monthly spend, vendors list, compliance info.
+- Export to CSV file (easy to open in Excel).
+- PDF export if possible.
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+## Admin Tools
 
-## Can I connect a custom domain to my Lovable project?
+For admins (special users):
+- See all users.
+- Check invoice counts.
+- Delete or flag invoices.
 
-Yes, you can!
+## Tech Tools Used
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+- Front: Next.js (for nice, fast web pages).
+- Back: Node.js or Python (pick one).
+- Database: PostgreSQL or MongoDB (to store data).
+- Host: Vercel (free and easy).
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+## How to Set Up and Deploy
+
+1. Get the code from GitHub.
+2. Install tools: Run `npm install` (for Next.js).
+3. Set up database: Use free Supabase or local.
+4. Add API keys for AI (like OpenAI).
+5. Run locally: `npm run dev`.
+6. Deploy: Push to Vercel, it auto-builds.
+
+## What Works and What's Next
+
+- Works: Sign up, upload invoice, extract data, AI checks, chat, reports.
+- Mocked: Some OCR and tax rules are simple fakes.
+- Extend: Add real OCR, more AI, paid plans for production.
+
+This app is easy for anyone to try. Open the link, sign in, upload an invoice, and see! If you have questions, check the code or ask. Thanks for trying Invoice AI!
