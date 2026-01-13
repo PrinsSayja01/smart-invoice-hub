@@ -242,7 +242,7 @@ export default function Index() {
               <span className="font-display text-lg font-bold">Invoice AI</span>
             </div>
             <p className="text-sm text-muted-foreground">
-              © 2024 Invoice AI. All rights reserved.
+              © 2026 Invoice AI. All rights reserved.
             </p>
           </div>
         </div>
