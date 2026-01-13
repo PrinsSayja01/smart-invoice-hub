@@ -9,7 +9,7 @@ This README explains the project in easy words. It's for anyone who wants to kno
 Invoice AI is a web app that helps users handle invoices with AI. It lets you sign up, upload files, process them, and ask questions to an AI chat. The goal is to make invoice work faster and safer. This version is ready for real users to test. It has login, invoice tools, AI helpers, and reports. It's hosted for free on Vercel.
 
 At the end, we give:
-- A live URL: https://smart-invoice-hub-three.vercel.app/
+- A live URL: [https://smart-invoice-hub-three.vercel.app/](https://smart-invoice-hub01.vercel.app/)
 - Demo user: Use Google to log in
 - Short setup guide: See below.
 
