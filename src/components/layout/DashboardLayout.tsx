@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
 import { Button } from '@/components/ui/button';
@@ -24,8 +24,8 @@ import {
   Menu,
   X,
 } from 'lucide-react';
+import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { ThemeToggle } from '@/components/ThemeToggle';
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -119,12 +119,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
             )}
           </nav>
 
-          {/* Theme Toggle & User section */}
-          <div className="p-4 border-t border-sidebar-border space-y-3">
-            <div className="flex items-center justify-between px-3">
-              <span className="text-xs text-sidebar-foreground/60">Theme</span>
-              <ThemeToggle />
-            </div>
+          {/* User section */}
+          <div className="p-4 border-t border-sidebar-border">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -182,16 +178,13 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
             </div>
             <span className="font-display text-lg font-bold">Invoice AI</span>
           </div>
-          <div className="flex items-center gap-2">
-            <ThemeToggle />
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            >
-              {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-            </Button>
-          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          >
+            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </Button>
         </div>
 
         {/* Mobile menu */}
