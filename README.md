@@ -76,7 +76,9 @@ This is the special part! We use AI agents (like smart rules or AI models) to he
 
 Talk to the AI like a friend!
 - Ask things like: "How many invoices this month?" or "Show suspicious ones."
-- Or: "Make a tax report" or "Who is my top vendor?"
+- Or: "Which vendor has the highest spend?"
+- Or: "What is my compliance status?"
+- Or:"Generate a summary report"
 - The chat uses real data from your account.
 - We use AI like OpenAI or others, or fake answers with real info.
 
