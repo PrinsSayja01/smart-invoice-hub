@@ -24,7 +24,6 @@ import {
   Menu,
   X,
 } from 'lucide-react';
-import { ThemeToggle } from '@/components/ThemeToggle';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 
@@ -65,16 +64,13 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       <aside className="fixed left-0 top-0 z-40 h-screen w-64 bg-sidebar hidden lg:block">
         <div className="flex h-full flex-col">
           {/* Logo */}
-          <div className="flex h-16 items-center justify-between px-6 border-b border-sidebar-border">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl gradient-primary">
-                <FileText className="h-5 w-5 text-primary-foreground" />
-              </div>
-              <span className="font-display text-lg font-bold text-sidebar-foreground">
-                Invoice AI
-              </span>
+          <div className="flex h-16 items-center gap-3 px-6 border-b border-sidebar-border">
+            <div className="p-2 rounded-xl gradient-primary">
+              <FileText className="h-5 w-5 text-primary-foreground" />
             </div>
-            <ThemeToggle />
+            <span className="font-display text-lg font-bold text-sidebar-foreground">
+              Invoice AI
+            </span>
           </div>
 
           {/* Navigation */}
@@ -182,16 +178,13 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
             </div>
             <span className="font-display text-lg font-bold">Invoice AI</span>
           </div>
-          <div className="flex items-center gap-2">
-            <ThemeToggle />
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            >
-              {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-            </Button>
-          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          >
+            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </Button>
         </div>
 
         {/* Mobile menu */}
