@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/lib/auth';
 import { useToast } from '@/hooks/use-toast';
-import { Send, Bot, User, Loader2, Sparkles } from 'lucide-react';
+import { Send, Bot, User, Loader2, Sparkles, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
 
@@ -19,12 +19,13 @@ interface Message {
 }
 
 const SUGGESTED_QUESTIONS = [
-  'How many invoices did I upload this month?',
-  'Show me suspicious invoices',
-  'Which vendor has the highest spend?',
-  'What is my compliance status?',
-  'Generate a summary report',
+  'How many invoices this month?',
+  'Show suspicious invoices',
+  'Top vendor by spend?',
+  'Compliance summary',
 ];
+
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
 
 export default function Chat() {
   const { user } = useAuth();
@@ -32,44 +33,47 @@ export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (user) {
-      loadChatHistory();
-    }
+    if (user) loadChatHistory();
+    return () => abortRef.current?.abort();
   }, [user]);
 
   useEffect(() => {
-    scrollToBottom();
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
 
   const loadChatHistory = async () => {
+    setLoadingHistory(true);
     const { data } = await supabase
       .from('chat_messages')
-      .select('*')
+      .select('id, role, content, created_at')
       .eq('user_id', user!.id)
       .order('created_at', { ascending: true })
       .limit(50);
 
-    if (data) {
-      setMessages(data as Message[]);
-    }
+    if (data) setMessages(data as Message[]);
+    setLoadingHistory(false);
   };
 
-  const scrollToBottom = () => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+  const clearHistory = async () => {
+    if (!user || messages.length === 0) return;
+    
+    await supabase.from('chat_messages').delete().eq('user_id', user.id);
+    setMessages([]);
+    toast({ title: 'Chat cleared', description: 'Your conversation history has been deleted.' });
   };
 
-  const sendMessage = async (messageText: string) => {
-    if (!messageText.trim() || loading) return;
+  const sendMessage = useCallback(async (messageText: string) => {
+    if (!messageText.trim() || loading || !user) return;
 
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: messageText,
+      content: messageText.trim(),
       created_at: new Date().toISOString(),
     };
 
@@ -77,111 +81,101 @@ export default function Chat() {
     setInput('');
     setLoading(true);
 
+    // Abort previous request if any
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+
     try {
-      // Save user message
-      await supabase.from('chat_messages').insert({
-        user_id: user!.id,
+      // Save user message in background
+      supabase.from('chat_messages').insert({
+        user_id: user.id,
         role: 'user',
-        content: messageText,
+        content: messageText.trim(),
+      }).then();
+
+      const response = await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({
+          messages: [...messages, userMessage].slice(-10).map(m => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+        signal: abortRef.current.signal,
       });
 
-      // Call chat edge function
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({
-            messages: [...messages, userMessage].map(m => ({
-              role: m.role,
-              content: m.content,
-            })),
-          }),
-        }
-      );
-
       if (!response.ok) {
-        if (response.status === 429) {
-          throw new Error('Rate limit exceeded. Please try again later.');
-        }
-        if (response.status === 402) {
-          throw new Error('Usage limit reached. Please add credits to continue.');
-        }
-        throw new Error('Failed to get response');
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 429) throw new Error(errorData.error || 'Rate limit exceeded. Please wait a moment.');
+        if (response.status === 402) throw new Error(errorData.error || 'Usage limit reached.');
+        throw new Error(errorData.error || 'Failed to get response');
       }
 
       if (!response.body) throw new Error('No response body');
 
+      const assistantId = crypto.randomUUID();
+      setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '', created_at: new Date().toISOString() }]);
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let assistantContent = '';
-      let assistantMessage: Message = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: '',
-        created_at: new Date().toISOString(),
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
-
-      let textBuffer = '';
+      let content = '';
+      let buffer = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        textBuffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value, { stream: true });
 
-        let newlineIndex: number;
-        while ((newlineIndex = textBuffer.indexOf('\n')) !== -1) {
-          let line = textBuffer.slice(0, newlineIndex);
-          textBuffer = textBuffer.slice(newlineIndex + 1);
+        let newlineIdx: number;
+        while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+          let line = buffer.slice(0, newlineIdx);
+          buffer = buffer.slice(newlineIdx + 1);
 
           if (line.endsWith('\r')) line = line.slice(0, -1);
-          if (line.startsWith(':') || line.trim() === '') continue;
-          if (!line.startsWith('data: ')) continue;
+          if (!line.startsWith('data: ') || line.trim() === '') continue;
 
           const jsonStr = line.slice(6).trim();
           if (jsonStr === '[DONE]') break;
 
           try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.choices?.[0]?.delta?.content;
-            if (content) {
-              assistantContent += content;
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === assistantMessage.id ? { ...m, content: assistantContent } : m
-                )
-              );
+            const delta = JSON.parse(jsonStr).choices?.[0]?.delta?.content;
+            if (delta) {
+              content += delta;
+              setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content } : m));
             }
           } catch {
-            // Incomplete JSON, put back and wait
-            textBuffer = line + '\n' + textBuffer;
+            buffer = line + '\n' + buffer;
             break;
           }
         }
       }
 
-      // Save assistant message
-      await supabase.from('chat_messages').insert({
-        user_id: user!.id,
-        role: 'assistant',
-        content: assistantContent,
-      });
+      // Save assistant response in background
+      if (content) {
+        supabase.from('chat_messages').insert({
+          user_id: user.id,
+          role: 'assistant',
+          content,
+        }).then();
+      }
     } catch (error: any) {
+      if (error.name === 'AbortError') return;
       toast({
         variant: 'destructive',
         title: 'Chat error',
         description: error.message || 'Failed to send message',
       });
+      // Remove failed assistant placeholder
+      setMessages(prev => prev.filter(m => m.content || m.role === 'user'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [loading, messages, user, toast]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -191,26 +185,36 @@ export default function Chat() {
   return (
     <DashboardLayout>
       <div className="h-[calc(100vh-8rem)] flex flex-col">
-        <div className="mb-4">
-          <h1 className="text-3xl font-display font-bold">AI Assistant</h1>
-          <p className="text-muted-foreground mt-1">
-            Ask questions about your invoices and get instant insights
-          </p>
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-display font-bold">AI Assistant</h1>
+            <p className="text-muted-foreground mt-1">
+              Ask questions about your invoices and get instant insights
+            </p>
+          </div>
+          {messages.length > 0 && (
+            <Button variant="ghost" size="sm" onClick={clearHistory} className="text-muted-foreground">
+              <Trash2 className="h-4 w-4 mr-1" />
+              Clear
+            </Button>
+          )}
         </div>
 
         <Card className="glass-card flex-1 flex flex-col overflow-hidden">
           <CardContent className="flex-1 flex flex-col p-0">
-            {/* Messages */}
             <ScrollArea className="flex-1 p-4" ref={scrollRef}>
-              {messages.length === 0 ? (
+              {loadingHistory ? (
+                <div className="flex items-center justify-center h-full">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : messages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-center py-8">
                   <div className="p-4 rounded-full bg-primary/10 mb-4">
                     <Sparkles className="h-8 w-8 text-primary" />
                   </div>
                   <h3 className="text-lg font-semibold mb-2">Invoice AI Assistant</h3>
                   <p className="text-muted-foreground mb-6 max-w-md">
-                    I can help you analyze your invoices, find patterns, and answer questions about
-                    your financial data.
+                    I can help you analyze invoices, find patterns, and answer questions about your data.
                   </p>
                   <div className="flex flex-wrap gap-2 justify-center max-w-lg">
                     {SUGGESTED_QUESTIONS.map((q, i) => (
@@ -232,7 +236,7 @@ export default function Chat() {
                     <div
                       key={message.id}
                       className={cn(
-                        'flex gap-3 animate-fade-in',
+                        'flex gap-3',
                         message.role === 'user' && 'flex-row-reverse'
                       )}
                     >
@@ -244,11 +248,7 @@ export default function Chat() {
                             : 'bg-accent text-accent-foreground'
                         )}
                       >
-                        {message.role === 'user' ? (
-                          <User className="h-4 w-4" />
-                        ) : (
-                          <Bot className="h-4 w-4" />
-                        )}
+                        {message.role === 'user' ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
                       </div>
                       <div
                         className={cn(
@@ -258,13 +258,15 @@ export default function Chat() {
                             : 'bg-muted rounded-tl-sm'
                         )}
                       >
-                        <p className="whitespace-pre-wrap">{message.content}</p>
+                        {message.content ? (
+                          <p className="whitespace-pre-wrap">{message.content}</p>
+                        ) : (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        )}
                         <p
                           className={cn(
                             'text-xs mt-1',
-                            message.role === 'user'
-                              ? 'text-primary-foreground/60'
-                              : 'text-muted-foreground'
+                            message.role === 'user' ? 'text-primary-foreground/60' : 'text-muted-foreground'
                           )}
                         >
                           {format(new Date(message.created_at), 'HH:mm')}
@@ -272,21 +274,10 @@ export default function Chat() {
                       </div>
                     </div>
                   ))}
-                  {loading && (
-                    <div className="flex gap-3 animate-fade-in">
-                      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent text-accent-foreground flex items-center justify-center">
-                        <Bot className="h-4 w-4" />
-                      </div>
-                      <div className="bg-muted p-3 rounded-2xl rounded-tl-sm">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
             </ScrollArea>
 
-            {/* Input */}
             <div className="p-4 border-t border-border">
               <form onSubmit={handleSubmit} className="flex gap-2">
                 <Input
@@ -296,12 +287,8 @@ export default function Chat() {
                   disabled={loading}
                   className="flex-1"
                 />
-                <Button
-                  type="submit"
-                  disabled={!input.trim() || loading}
-                  className="gradient-primary"
-                >
-                  <Send className="h-4 w-4" />
+                <Button type="submit" disabled={!input.trim() || loading} className="gradient-primary">
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
               </form>
             </div>
