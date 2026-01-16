@@ -13,6 +13,17 @@ interface DashboardStats {
   totalAmount: number;
   flaggedInvoices: number;
 }
+export default function Dashboard() {
+
+  useEffect(() => {
+    const loggedIn = localStorage.getItem("loggedIn");
+    if (!loggedIn) {
+      window.location.href = "/login";
+    }
+  }, []);
+
+  return <h1>Welcome to Dashboard</h1>;
+}
 
 export default function Dashboard() {
   const { user } = useAuth();
