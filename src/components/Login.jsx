@@ -1,32 +1,38 @@
 import { GoogleAuthProvider, signInWithPopup } from "firebase/auth";
-import { auth } from "../firebase"; // path may change
+import { auth } from "../firebase"; // adjust path if needed
 
 const provider = new GoogleAuthProvider();
 
 export default function Login() {
 
-  cconst loginWithGoogle = async () => {
-  try {
-    const result = await signInWithPopup(auth, provider);
-    const token = await result.user.getIdToken();
+  const loginWithGoogle = async () => {
+    try {
+      // STEP 6.2
+      const result = await signInWithPopup(auth, provider);
 
-    const res = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
+      // STEP 6.3
+      const token = await result.user.getIdToken();
 
-    if (!res.ok) {
-      throw new Error("Login failed");
+      // STEP 7
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+
+      if (!res.ok) throw new Error("Login failed");
+
+      // STEP 9
+      localStorage.setItem("loggedIn", "true");
+
+      // STEP 11
+      window.location.href = "/dashboard";
+
+    } catch (err) {
+      console.error(err);
     }
+  };
 
-    // ✅ login success
-    console.log("User verified");
-
-  } catch (err) {
-    console.error(err);
-  }
-};
   return (
     <button onClick={loginWithGoogle}>
       Sign in with Google
