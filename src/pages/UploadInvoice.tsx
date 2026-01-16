@@ -216,7 +216,7 @@ export default function UploadInvoice() {
 
   const loadLibraries = useCallback(async () => {
     try {
-      if (!window.Tesseract) {
+      if (!(window as any).Tesseract) {
         console.log('Loading Tesseract.js...');
         const script = document.createElement('script');
         script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
@@ -231,14 +231,14 @@ export default function UploadInvoice() {
         });
       }
       
-      if (!window.pdfjsLib) {
+      if (!(window as any).pdfjsLib) {
         console.log('Loading PDF.js...');
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
         document.head.appendChild(script);
         await new Promise((resolve, reject) => {
           script.onload = () => {
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc = 
+            (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc = 
               'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
             console.log('PDF.js loaded successfully');
             resolve(null);
@@ -258,7 +258,8 @@ export default function UploadInvoice() {
   const extractTextFromPDF = useCallback(async (file: File) => {
     setOcrProgress(10);
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pdfjsLib = (window as any).pdfjsLib;
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     let fullText = '';
     
     if (!canvasRef.current) canvasRef.current = document.createElement('canvas');
@@ -280,7 +281,7 @@ export default function UploadInvoice() {
         await page.render({ canvasContext: context, viewport }).promise;
         
         if (!workerRef.current) {
-          workerRef.current = await window.Tesseract.createWorker('eng');
+          workerRef.current = await (window as any).Tesseract.createWorker('eng');
         }
         const { data: { text } } = await workerRef.current.recognize(canvas);
         fullText += text + '\n';
@@ -298,13 +299,13 @@ export default function UploadInvoice() {
           setOcrProgress(10);
           console.log('Starting OCR process...');
           
-          if (!window.Tesseract) {
+          if (!(window as any).Tesseract) {
             throw new Error('Tesseract library not loaded');
           }
           
           if (!workerRef.current) {
             console.log('Creating Tesseract worker...');
-            workerRef.current = await window.Tesseract.createWorker('eng', 1, {
+            workerRef.current = await (window as any).Tesseract.createWorker('eng', 1, {
               logger: (m: any) => {
                 if (m.status === 'recognizing text') {
                   setOcrProgress(10 + Math.round(m.progress * 80));
