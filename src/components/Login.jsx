@@ -5,28 +5,28 @@ const provider = new GoogleAuthProvider();
 
 export default function Login() {
 
-  const loginWithGoogle = async () => {
-    try {
-      // STEP 6.2 – open Google popup
-      const result = await signInWithPopup(auth, provider);
+  cconst loginWithGoogle = async () => {
+  try {
+    const result = await signInWithPopup(auth, provider);
+    const token = await result.user.getIdToken();
 
-      // STEP 6.3 – get ID token
-      const token = await result.user.getIdToken();
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
 
-      // STEP 7 – send token to backend
-      await fetch("/api/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
-
-      console.log("Login success");
-
-    } catch (err) {
-      console.error("Login failed", err);
+    if (!res.ok) {
+      throw new Error("Login failed");
     }
-  };
 
+    // ✅ login success
+    console.log("User verified");
+
+  } catch (err) {
+    console.error(err);
+  }
+};
   return (
     <button onClick={loginWithGoogle}>
       Sign in with Google
