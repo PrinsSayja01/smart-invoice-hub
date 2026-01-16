@@ -21,83 +21,72 @@ serve(async (req) => {
       throw new Error("LOVABLE_API_KEY is not configured");
     }
 
-    // Get authorization header to identify user
-    const authHeader = req.headers.get("authorization");
-    let userId = null;
     let invoiceContext = "";
+    const authHeader = req.headers.get("authorization");
 
     if (authHeader && SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
       const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-      
-      // Get user from token
       const token = authHeader.replace("Bearer ", "");
       const { data: { user } } = await supabase.auth.getUser(token);
-      userId = user?.id;
 
-      if (userId) {
-        // Fetch user's invoice data for context
+      if (user?.id) {
+        // Optimized query - only fetch needed columns
         const { data: invoices } = await supabase
           .from("invoices")
-          .select("*")
-          .eq("user_id", userId)
+          .select("vendor_name, total_amount, compliance_status, risk_score, is_flagged, created_at, invoice_number")
+          .eq("user_id", user.id)
           .order("created_at", { ascending: false })
-          .limit(100);
+          .limit(50);
 
-        if (invoices && invoices.length > 0) {
-          const totalInvoices = invoices.length;
-          const totalAmount = invoices.reduce((sum, inv) => sum + (Number(inv.total_amount) || 0), 0);
-          const flaggedCount = invoices.filter(inv => inv.is_flagged).length;
-          const compliantCount = invoices.filter(inv => inv.compliance_status === "compliant").length;
-          
-          // Get this month's invoices
+        if (invoices?.length) {
           const now = new Date();
           const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-          const thisMonthInvoices = invoices.filter(inv => new Date(inv.created_at) >= startOfMonth);
-
-          // Get vendor breakdown
-          const vendorTotals: Record<string, number> = {};
-          invoices.forEach(inv => {
+          
+          const stats = invoices.reduce((acc, inv) => {
+            acc.total += Number(inv.total_amount) || 0;
+            if (inv.is_flagged) acc.flagged++;
+            if (inv.compliance_status === "compliant") acc.compliant++;
+            if (inv.compliance_status === "needs_review") acc.needsReview++;
+            if (new Date(inv.created_at) >= startOfMonth) acc.thisMonth++;
+            
             const vendor = inv.vendor_name || "Unknown";
-            vendorTotals[vendor] = (vendorTotals[vendor] || 0) + (Number(inv.total_amount) || 0);
-          });
-          const topVendors = Object.entries(vendorTotals)
+            acc.vendors[vendor] = (acc.vendors[vendor] || 0) + (Number(inv.total_amount) || 0);
+            return acc;
+          }, { total: 0, flagged: 0, compliant: 0, needsReview: 0, thisMonth: 0, vendors: {} as Record<string, number> });
+
+          const topVendors = Object.entries(stats.vendors)
             .sort((a, b) => b[1] - a[1])
-            .slice(0, 5);
+            .slice(0, 5)
+            .map(([name, amt]) => `${name}: $${amt.toLocaleString()}`)
+            .join(", ");
+
+          const recentList = invoices.slice(0, 5)
+            .map(inv => `${inv.vendor_name || "Unknown"} - $${Number(inv.total_amount || 0).toLocaleString()} (${inv.compliance_status}, ${inv.risk_score} risk)`)
+            .join("\n");
 
           invoiceContext = `
-USER'S INVOICE DATA CONTEXT:
-- Total invoices: ${totalInvoices}
-- Invoices this month: ${thisMonthInvoices.length}
-- Total spend: $${totalAmount.toLocaleString()}
-- Flagged/suspicious invoices: ${flaggedCount}
-- Compliant invoices: ${compliantCount}
-- Top vendors by spend:
-${topVendors.map(([name, amount]) => `  - ${name}: $${amount.toLocaleString()}`).join("\n")}
+INVOICE DATA:
+• Total: ${invoices.length} invoices, $${stats.total.toLocaleString()} total spend
+• This month: ${stats.thisMonth} invoices
+• Status: ${stats.compliant} compliant, ${stats.needsReview} need review, ${stats.flagged} flagged
+• Top vendors: ${topVendors}
 
-Recent invoices (last 10):
-${invoices.slice(0, 10).map(inv => 
-  `- ${inv.vendor_name || "Unknown"}: $${Number(inv.total_amount || 0).toLocaleString()} (${inv.compliance_status}, ${inv.risk_score} risk)`
-).join("\n")}
-`;
+Recent:
+${recentList}`;
         } else {
-          invoiceContext = "USER HAS NO INVOICES YET. Encourage them to upload their first invoice.";
+          invoiceContext = "No invoices uploaded yet. Encourage uploading first invoice.";
         }
       }
     }
 
-    const systemPrompt = `You are Invoice AI Assistant, a helpful AI that helps users understand and analyze their invoices. You have access to the user's invoice data and can answer questions about their spending, vendors, compliance status, and more.
-
+    const systemPrompt = `You are Invoice AI, a concise assistant for invoice analysis. Answer based on the data provided.
 ${invoiceContext}
 
-Guidelines:
-- Be concise and helpful
-- When answering questions about data, use the context provided above
-- If asked about specific invoices, refer to the data above
-- For reports or summaries, calculate based on the data provided
-- If asked to do something you can't do (like modify invoices), explain what the user should do instead
-- Be friendly and professional
-
-If the user has no invoice data, help them understand the upload process and what features are available.`;
+Rules:
+- Be brief and direct (2-3 sentences max for simple questions)
+- Use the data above for all answers
+- Format numbers with $ and commas
+- If data is missing, say so briefly`;
 
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -109,40 +98,32 @@ If the user has no invoice data, help them understand the upload process and wha
         model: "google/gemini-3-flash-preview",
         messages: [
           { role: "system", content: systemPrompt },
-          ...messages,
+          ...messages.slice(-10), // Limit context window
         ],
         stream: true,
+        max_tokens: 500, // Keep responses concise
       }),
     });
 
     if (!response.ok) {
-      if (response.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "Rate limits exceeded, please try again later." }),
-          {
-            status: 429,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          }
-        );
-      }
-      if (response.status === 402) {
-        return new Response(
-          JSON.stringify({ error: "Payment required, please add funds to continue." }),
-          {
-            status: 402,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          }
-        );
-      }
-      const errorText = await response.text();
-      console.error("AI gateway error:", response.status, errorText);
-      return new Response(
-        JSON.stringify({ error: "AI gateway error" }),
-        {
-          status: 500,
+      const status = response.status;
+      if (status === 429) {
+        return new Response(JSON.stringify({ error: "Too many requests. Please wait a moment." }), {
+          status: 429,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+        });
+      }
+      if (status === 402) {
+        return new Response(JSON.stringify({ error: "Usage limit reached. Please add credits." }), {
+          status: 402,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      console.error("AI error:", status, await response.text());
+      return new Response(JSON.stringify({ error: "AI service error" }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     return new Response(response.body, {
@@ -152,10 +133,7 @@ If the user has no invoice data, help them understand the upload process and wha
     console.error("Chat error:", error);
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
