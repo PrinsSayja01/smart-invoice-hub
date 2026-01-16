@@ -10,17 +10,19 @@ if (!admin.apps.length) {
   });
 }
 
-export default async function handler(req, res) {
+export async function POST(req) {
   try {
-    const { token } = req.body;
+    const { token } = await req.json();
     const decoded = await admin.auth().verifyIdToken(token);
 
-    res.status(200).json({
-      uid: decoded.uid,
-      email: decoded.email,
-      name: decoded.name,
-    });
+    return new Response(
+      JSON.stringify({ uid: decoded.uid, email: decoded.email }),
+      { status: 200 }
+    );
   } catch {
-    res.status(401).json({ error: "Unauthorized" });
+    return new Response(
+      JSON.stringify({ error: "Unauthorized" }),
+      { status: 401 }
+    );
   }
 }
