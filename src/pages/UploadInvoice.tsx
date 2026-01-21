@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,8 +17,35 @@ interface ExtractedData {
 }
 
 export default function UploadInvoice() {
-  const supabase = useSupabaseClient();
-  const session = useSession();
+  // Mock session - Replace with your actual auth state from your Supabase implementation
+  // In your actual code, get this from wherever you store auth state
+  const [session, setSession] = useState<any>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  
+  useEffect(() => {
+    // Replace this with your actual session retrieval logic
+    // Example: Get from your auth context, Redux store, or localStorage
+    const checkAuth = () => {
+      // Check if user is logged in via your existing auth system
+      const token = localStorage.getItem('auth_token');
+      const userSession = localStorage.getItem('user_session');
+      
+      if (token && userSession) {
+        setAuthToken(token);
+        try {
+          setSession(JSON.parse(userSession));
+        } catch (e) {
+          console.error('Failed to parse session');
+        }
+      }
+    };
+    
+    checkAuth();
+    
+    // Listen for auth changes if you have an event system
+    window.addEventListener('auth-change', checkAuth);
+    return () => window.removeEventListener('auth-change', checkAuth);
+  }, []);
   
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -40,7 +66,8 @@ export default function UploadInvoice() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const isAuthenticated = !!session?.user;
-  const userEmail = session?.user?.email;
+  const userEmail = session?.user?.email || session?.email;
+  const accessToken = authToken || session?.access_token;
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -76,37 +103,57 @@ export default function UploadInvoice() {
   };
 
   const handleGoogleSignIn = async () => {
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          scopes: 'email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly',
-          redirectTo: window.location.origin + '/invoice-upload'
-        }
-      });
-
-      if (error) {
-        throw error;
-      }
-    } catch (error: any) {
-      console.error('Sign in error:', error);
-      alert(`Sign in failed: ${error.message}`);
-    }
+    // This redirects to your Google OAuth flow
+    // Replace this URL with your actual Supabase auth endpoint
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';
+    const redirectUri = encodeURIComponent(window.location.origin + '/invoice-upload');
+    
+    // Construct the Google OAuth URL with Drive and Gmail scopes
+    const scopes = encodeURIComponent(
+      'email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly'
+    );
+    
+    // Redirect to Supabase Google auth endpoint
+    window.location.href = `${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectUri}&scopes=${scopes}`;
   };
 
   const handleSignOut = async () => {
     try {
-      await supabase.auth.signOut();
+      // Call your logout endpoint or clear local storage
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';
+      const token = authToken || session?.access_token;
+      
+      if (token) {
+        // Optional: Call Supabase logout endpoint
+        await fetch(`${supabaseUrl}/auth/v1/logout`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+      }
+      
+      // Clear local storage
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('user_session');
+      localStorage.removeItem('supabase_session');
+      
+      setSession(null);
+      setAuthToken(null);
       setDriveFiles([]);
       setSelectedDriveFile(null);
       setExtractedData(null);
+      
+      // Dispatch auth change event
+      window.dispatchEvent(new Event('auth-change'));
     } catch (error: any) {
       console.error('Sign out error:', error);
     }
   };
 
   const fetchDriveFiles = async () => {
-    if (!session?.access_token) {
+    if (!accessToken) {
       alert('Please log in to access Google Drive');
       return;
     }
@@ -116,7 +163,7 @@ export default function UploadInvoice() {
       
       const response = await fetch('/api/drive/list-files', {
         headers: {
-          'Authorization': `Bearer ${session.access_token}`
+          'Authorization': `Bearer ${accessToken}`
         }
       });
 
@@ -348,7 +395,7 @@ Return only the JSON object, no markdown formatting or explanation.`
   };
 
   const processSelectedDriveFile = async () => {
-    if (!selectedDriveFile || !session?.access_token) return;
+    if (!selectedDriveFile || !accessToken) return;
 
     setUploading(true);
     setProcessing(true);
@@ -366,7 +413,7 @@ Return only the JSON object, no markdown formatting or explanation.`
         `/api/drive/download-file?fileId=${selectedDriveFile}`,
         {
           headers: {
-            'Authorization': `Bearer ${session.access_token}`
+            'Authorization': `Bearer ${accessToken}`
           }
         }
       );
