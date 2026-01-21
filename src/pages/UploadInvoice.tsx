@@ -105,7 +105,7 @@ export default function UploadInvoice() {
   const handleGoogleSignIn = async () => {
     // This redirects to your Google OAuth flow
     // Replace this URL with your actual Supabase auth endpoint
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://tkpogjvlepwrsswqzsdu.supabase.co';
     const redirectUri = encodeURIComponent(window.location.origin + '/invoice-upload');
     
     // Construct the Google OAuth URL with Drive and Gmail scopes
@@ -120,7 +120,7 @@ export default function UploadInvoice() {
   const handleSignOut = async () => {
     try {
       // Call your logout endpoint or clear local storage
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://tkpogjvlepwrsswqzsdu.supabase.co';
       const token = authToken || session?.access_token;
       
       if (token) {
