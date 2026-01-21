@@ -1,10 +1,10 @@
-import { useState, useCallback, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Upload, FileText, Image, X, Loader2, CheckCircle2, AlertCircle, Mail, HardDrive, Copy } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Upload, FileText, Image, X, Loader2, CheckCircle2, AlertCircle, Mail, HardDrive, LogIn, RefreshCw } from 'lucide-react';
 
 interface ExtractedData {
   vendor_name: string;
@@ -16,6 +16,36 @@ interface ExtractedData {
 }
 
 export default function UploadInvoice() {
+  // Mock session - Replace with your actual auth state from your Supabase implementation
+  // In your actual code, get this from wherever you store auth state
+  const [session, setSession] = useState<any>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  
+  useEffect(() => {
+    // Replace this with your actual session retrieval logic
+    // Example: Get from your auth context, Redux store, or localStorage
+    const checkAuth = () => {
+      // Check if user is logged in via your existing auth system
+      const token = localStorage.getItem('auth_token');
+      const userSession = localStorage.getItem('user_session');
+      
+      if (token && userSession) {
+        setAuthToken(token);
+        try {
+          setSession(JSON.parse(userSession));
+        } catch (e) {
+          console.error('Failed to parse session');
+        }
+      }
+    };
+    
+    checkAuth();
+    
+    // Listen for auth changes if you have an event system
+    window.addEventListener('auth-change', checkAuth);
+    return () => window.removeEventListener('auth-change', checkAuth);
+  }, []);
+  
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -25,15 +55,18 @@ export default function UploadInvoice() {
     step: string;
     status: 'pending' | 'processing' | 'complete' | 'error';
   }[]>([]);
-  const [googleDriveUrl, setGoogleDriveUrl] = useState('');
   const [uploadMethod, setUploadMethod] = useState<'file' | 'drive' | 'email'>('file');
-  const [ocrProgress, setOcrProgress] = useState(0);
   const [extractedText, setExtractedText] = useState('');
+  const [driveFiles, setDriveFiles] = useState<any[]>([]);
+  const [selectedDriveFile, setSelectedDriveFile] = useState<string | null>(null);
+  const [ocrProgress, setOcrProgress] = useState(0);
   
   const workerRef = useRef<any>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const emailAddress = `invoices+user@invoiceai.app`;
+  const isAuthenticated = !!session?.user;
+  const userEmail = session?.user?.email || session?.email;
+  const accessToken = authToken || session?.access_token;
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -68,179 +101,117 @@ export default function UploadInvoice() {
     return validTypes.includes(file.type);
   };
 
-  const copyEmailToClipboard = () => {
-    navigator.clipboard.writeText(emailAddress);
-    alert('Email copied to clipboard!');
+  const handleGoogleSignIn = async () => {
+    // This redirects to your Google OAuth flow
+    // Replace this URL with your actual Supabase auth endpoint
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://tkpogjvlepwrsswqzsdu.supabase.co  ';
+    const redirectUri = encodeURIComponent(window.location.origin + '/invoice-upload');
+    
+    // Construct the Google OAuth URL with Drive and Gmail scopes
+    const scopes = encodeURIComponent(
+      'email profile https://www.googleapis.com/auth/drive.readonly   https://www.googleapis.com/auth/gmail.readonly  '
+    );
+    
+    // Redirect to Supabase Google auth endpoint
+    window.location.href = `${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectUri}&scopes=${scopes}`;
   };
 
-  const extractInvoiceData = useCallback((text: string): ExtractedData => {
-    console.log('Extracting invoice data from text:', text.substring(0, 500));
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l);
-    
-    let vendorName = '';
-    const companyIndicators = ['inc', 'llc', 'ltd', 'corp', 'corporation', 'company', 'co.', 'gmbh', 'ag', 'sa', 'limited'];
-    
-    for (let i = 0; i < Math.min(15, lines.length); i++) {
-      const line = lines[i];
-      const cleanLine = line.replace(/[^a-zA-Z0-9\s&.-]/g, '');
+  const handleSignOut = async () => {
+    try {
+      // Call your logout endpoint or clear local storage
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://tkpogjvlepwrsswqzsdu.supabase.co  ';
+      const token = authToken || session?.access_token;
       
-      if (/^(invoice|bill|receipt|tax|from|to|date|number|total)/i.test(line)) continue;
-      
-      if (cleanLine.length > 3 && cleanLine.length < 100) {
-        const hasIndicator = companyIndicators.some(ind => cleanLine.toLowerCase().includes(ind));
-        const isAllCaps = cleanLine === cleanLine.toUpperCase() && /[A-Z]{3,}/.test(cleanLine);
-        const hasMultipleWords = cleanLine.split(/\s+/).length >= 2;
-        const hasLetters = /[a-zA-Z]{3,}/.test(cleanLine);
-        
-        if ((hasIndicator || (isAllCaps && hasMultipleWords)) && hasLetters) {
-          vendorName = cleanLine;
-          break;
-        }
-      }
-    }
-    
-    if (!vendorName) {
-      vendorName = lines.find(l => {
-        const clean = l.replace(/[^a-zA-Z0-9\s]/g, '');
-        return clean.length > 5 && /[a-zA-Z]{3,}/.test(clean) && !/^\d+$/.test(clean);
-      }) || '';
-    }
-    
-    let invoiceNumber = '';
-    const invPatterns = [
-      /invoice\s*(?:no|number|#|num)?[:\s#-]*([A-Z0-9][-A-Z0-9]{2,20})/i,
-      /inv\s*(?:no|number|#)?[:\s#-]*([A-Z0-9][-A-Z0-9]{2,20})/i,
-      /bill\s*(?:no|number|#)?[:\s#-]*([A-Z0-9][-A-Z0-9]{2,20})/i,
-      /(?:^|\s)#\s*([A-Z0-9][-A-Z0-9]{3,20})/i,
-      /\b([A-Z]{2,4}[-\s]?\d{4,10})\b/,
-      /\b(INV[-\s]?\d{4,10})\b/i,
-      /\b(\d{6,12})\b/
-    ];
-    
-    for (const pattern of invPatterns) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        invoiceNumber = match[1].trim();
-        break;
-      }
-    }
-    
-    let invoiceDate = '';
-    const datePatterns = [
-      /(?:invoice\s*)?date[:\s]*(\d{1,2}[-/.\s]\d{1,2}[-/.\s]\d{2,4})/i,
-      /(?:invoice\s*)?date[:\s]*(\d{4}[-/.\s]\d{1,2}[-/.\s]\d{1,2})/i,
-      /(?:dated|issued)[:\s]*(\d{1,2}[-/.\s]\d{1,2}[-/.\s]\d{2,4})/i,
-      /\b(\d{1,2}[-/]\d{1,2}[-/]\d{4})\b/,
-      /\b(\d{4}[-/]\d{1,2}[-/]\d{1,2})\b/,
-      /\b(\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{2,4})\b/i
-    ];
-    
-    for (const pattern of datePatterns) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        try {
-          let dateStr = match[1].replace(/[.\s]+/g, '/');
-          const parsed = new Date(dateStr);
-          if (!isNaN(parsed.getTime()) && parsed.getFullYear() > 1990 && parsed.getFullYear() < 2100) {
-            invoiceDate = parsed.toISOString().split('T')[0];
-            break;
+      if (token) {
+        // Optional: Call Supabase logout endpoint
+        await fetch(`${supabaseUrl}/auth/v1/logout`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
           }
-        } catch (e) {
-          console.log('Date parse error:', e);
-        }
+        });
       }
+      
+      // Clear local storage
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('user_session');
+      localStorage.removeItem('supabase_session');
+      
+      setSession(null);
+      setAuthToken(null);
+      setDriveFiles([]);
+      setSelectedDriveFile(null);
+      setExtractedData(null);
+      
+      // Dispatch auth change event
+      window.dispatchEvent(new Event('auth-change'));
+    } catch (error: any) {
+      console.error('Sign out error:', error);
     }
-    
-    let currency = 'USD';
-    if (/€|EUR/i.test(text)) currency = 'EUR';
-    else if (/£|GBP/i.test(text)) currency = 'GBP';
-    else if (/¥|JPY/i.test(text)) currency = 'JPY';
-    else if (/₹|INR/i.test(text)) currency = 'INR';
-    else if (/CAD/i.test(text)) currency = 'CAD';
-    else if (/AUD/i.test(text)) currency = 'AUD';
-    else if (/CHF/i.test(text)) currency = 'CHF';
-    else if (/\$|USD/i.test(text)) currency = 'USD';
-    
-    const extractAmount = (pattern: RegExp) => {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        const numStr = match[1].replace(/[,\s]/g, '').replace(/[^\d.]/g, '');
-        const amount = parseFloat(numStr);
-        if (!isNaN(amount) && amount > 0 && amount < 100000000) {
-          return amount;
+  };
+
+  const fetchDriveFiles = async () => {
+    if (!accessToken) {
+      alert('Please log in to access Google Drive');
+      return;
+    }
+
+    try {
+      setUploading(true);
+      
+      const response = await fetch('/api/drive/list-files', {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`
         }
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to fetch files');
       }
-      return null;
-    };
-    
-    let totalAmount = null;
-    const totalPatterns = [
-      /total\s*(?:amount)?[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i,
-      /grand\s*total[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i,
-      /amount\s*due[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i,
-      /balance\s*due[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i,
-      /(?:total|amount)\s*payable[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i,
-      /net\s*total[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i
-    ];
-    
-    for (const pattern of totalPatterns) {
-      totalAmount = extractAmount(pattern);
-      if (totalAmount) break;
+
+      const data = await response.json();
+      setDriveFiles(data.files || []);
+      
+      if (data.files?.length === 0) {
+        alert('No PDF or image files found in your Google Drive. Upload some invoices to your Drive first!');
+      }
+      
+    } catch (error: any) {
+      console.error('Drive fetch error:', error);
+      
+      if (error.message.includes('re-authenticate') || error.message.includes('provider token')) {
+        alert('Please log out and log back in to grant Google Drive access permissions.');
+      } else {
+        alert(`Error fetching files: ${error.message}`);
+      }
+    } finally {
+      setUploading(false);
     }
-    
-    let taxAmount = null;
-    const taxPatterns = [
-      /(?:tax|vat|gst)[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i,
-      /sales\s*tax[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i,
-      /value\s*added\s*tax[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i,
-      /(?:tax|vat)\s*\(\d+%\)[:\s]*(?:[$£€¥₹]|[A-Z]{3})?\s*([\d,]+\.?\d{0,2})/i
-    ];
-    
-    for (const pattern of taxPatterns) {
-      taxAmount = extractAmount(pattern);
-      if (taxAmount) break;
-    }
-    
-    const result: ExtractedData = {
-      vendor_name: vendorName.slice(0, 100),
-      invoice_number: invoiceNumber.slice(0, 50),
-      invoice_date: invoiceDate,
-      total_amount: totalAmount ? totalAmount.toFixed(2) : '',
-      tax_amount: taxAmount ? taxAmount.toFixed(2) : '0.00',
-      currency
-    };
-    
-    console.log('Final extracted data:', result);
-    return result;
-  }, []);
+  };
 
   const loadLibraries = useCallback(async () => {
     try {
       if (!(window as any).Tesseract) {
-        console.log('Loading Tesseract.js...');
         const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+        script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js  ';
         document.head.appendChild(script);
         await new Promise((resolve, reject) => {
-          script.onload = () => {
-            console.log('Tesseract.js loaded successfully');
-            resolve(null);
-          };
+          script.onload = resolve;
           script.onerror = () => reject(new Error('Failed to load Tesseract.js'));
           setTimeout(() => reject(new Error('Tesseract.js load timeout')), 10000);
         });
       }
       
       if (!(window as any).pdfjsLib) {
-        console.log('Loading PDF.js...');
         const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js  ';
         document.head.appendChild(script);
         await new Promise((resolve, reject) => {
           script.onload = () => {
             (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc = 
-              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-            console.log('PDF.js loaded successfully');
+              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js  ';
             resolve(null);
           };
           script.onerror = () => reject(new Error('Failed to load PDF.js'));
@@ -297,14 +268,12 @@ export default function UploadInvoice() {
       reader.onload = async (e) => {
         try {
           setOcrProgress(10);
-          console.log('Starting OCR process...');
           
           if (!(window as any).Tesseract) {
             throw new Error('Tesseract library not loaded');
           }
           
           if (!workerRef.current) {
-            console.log('Creating Tesseract worker...');
             workerRef.current = await (window as any).Tesseract.createWorker('eng', 1, {
               logger: (m: any) => {
                 if (m.status === 'recognizing text') {
@@ -322,83 +291,14 @@ export default function UploadInvoice() {
           reject(error);
         }
       };
-      reader.onerror = (error) => reject(error);
+      reader.onerror = reject;
       reader.readAsDataURL(imageFile);
     });
   }, []);
 
-  const processInvoice = async () => {
-    if (!file) return;
-
-    setUploading(true);
-    setProcessing(true);
-    setProcessingSteps([
-      { step: 'Uploading file...', status: 'complete' },
-      { step: 'Running OCR extraction...', status: 'processing' },
-      { step: 'Classifying invoice type...', status: 'pending' },
-      { step: 'Detecting anomalies...', status: 'pending' },
-      { step: 'Checking compliance...', status: 'pending' },
-    ]);
-
-    try {
-      console.log('Loading OCR libraries...');
-      await loadLibraries();
-      
-      let text = '';
-      
-      if (file.type === 'application/pdf') {
-        console.log('Processing PDF...');
-        text = await extractTextFromPDF(file);
-      } else {
-        console.log('Processing image with OCR...');
-        text = await performOCR(file);
-      }
-      
-      console.log('Extraction complete. Text length:', text.length);
-      setExtractedText(text);
-      
-      setProcessingSteps(prev => prev.map((s, i) => 
-        i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s
-      ));
-      
-      // AI-powered data extraction
-      console.log('Using AI to extract invoice data...');
-      const aiExtractedData = await extractWithAI(text);
-      
-      setProcessingSteps(prev => prev.map((s, i) => 
-        i === 2 ? { ...s, status: 'complete' } : i === 3 ? { ...s, status: 'processing' } : s
-      ));
-      
-      // Simulate anomaly detection
-      await new Promise(resolve => setTimeout(resolve, 800));
-      
-      setProcessingSteps(prev => prev.map((s, i) => 
-        i === 3 ? { ...s, status: 'complete' } : i === 4 ? { ...s, status: 'processing' } : s
-      ));
-      
-      // Simulate compliance check
-      await new Promise(resolve => setTimeout(resolve, 600));
-      
-      setProcessingSteps(prev => prev.map(s => ({ ...s, status: 'complete' })));
-      
-      setExtractedData(aiExtractedData);
-      
-      alert('Invoice processed successfully! Review the AI-extracted data below.');
-    } catch (error: any) {
-      console.error('Error processing invoice:', error);
-      setProcessingSteps(prev => prev.map((s) => 
-        s.status === 'processing' ? { ...s, status: 'error' } : s
-      ));
-      alert(`Processing failed: ${error.message}`);
-    } finally {
-      setUploading(false);
-      setProcessing(false);
-    }
-  };
-
   const extractWithAI = async (text: string): Promise<ExtractedData> => {
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("https://api.anthropic.com/v1/messages  ", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -423,7 +323,6 @@ Return only the JSON object, no markdown formatting or explanation.`
       const data = await response.json();
       const aiResponse = data.content[0].text.trim();
       
-      // Parse AI response
       const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
@@ -437,157 +336,131 @@ Return only the JSON object, no markdown formatting or explanation.`
         };
       }
       
-      // Fallback to regex extraction
-      return extractInvoiceData(text);
+      throw new Error('Failed to parse AI response');
     } catch (error) {
-      console.error('AI extraction failed, using regex fallback:', error);
-      return extractInvoiceData(text);
+      console.error('AI extraction failed:', error);
+      throw error;
     }
   };
 
-  const processGoogleDriveFile = async () => {
-    if (!googleDriveUrl) return;
+  const processInvoice = async () => {
+    if (!file) return;
 
     setUploading(true);
     setProcessing(true);
     setProcessingSteps([
-      { step: 'Fetching from Google Drive...', status: 'processing' },
-      { step: 'Running OCR extraction...', status: 'pending' },
-      { step: 'Classifying invoice type...', status: 'pending' },
-      { step: 'Detecting anomalies...', status: 'pending' },
-      { step: 'Checking compliance...', status: 'pending' },
+      { step: 'Uploading file...', status: 'complete' },
+      { step: 'Running OCR extraction...', status: 'processing' },
+      { step: 'Extracting with AI...', status: 'pending' },
+      { step: 'Validating data...', status: 'pending' },
     ]);
 
     try {
-      // Extract file ID from various Google Drive URL formats
-      let fileId = null;
-      
-      // Format: https://drive.google.com/file/d/FILE_ID/view
-      const match1 = googleDriveUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
-      // Format: https://drive.google.com/open?id=FILE_ID
-      const match2 = googleDriveUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-      
-      fileId = match1 ? match1[1] : (match2 ? match2[1] : null);
-
-      if (!fileId) {
-        throw new Error('Invalid Google Drive URL format. Please use a share link like: https://drive.google.com/file/d/FILE_ID/view');
-      }
-
-      console.log('Extracted file ID:', fileId);
-
-      // Try multiple download methods
-      let blob = null;
-      let downloadSuccess = false;
-
-      // Method 1: Direct export URL
-      try {
-        console.log('Attempting direct download...');
-        const directUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
-        const response = await fetch(directUrl, { mode: 'cors' });
-        
-        if (response.ok) {
-          blob = await response.blob();
-          downloadSuccess = true;
-          console.log('Direct download successful');
-        }
-      } catch (e) {
-        console.log('Direct download failed, trying alternative method...');
-      }
-
-      // Method 2: Using CORS proxy
-      if (!downloadSuccess) {
-        try {
-          console.log('Attempting download via CORS proxy...');
-          const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://drive.google.com/uc?export=download&id=${fileId}`)}`;
-          const response = await fetch(proxyUrl);
-          
-          if (response.ok) {
-            blob = await response.blob();
-            downloadSuccess = true;
-            console.log('Proxy download successful');
-          }
-        } catch (e) {
-          console.log('Proxy download failed');
-        }
-      }
-
-      if (!downloadSuccess || !blob) {
-        throw new Error('Unable to download file from Google Drive. Please ensure:\n1. File sharing is set to "Anyone with the link can view"\n2. The link is correct\n3. Try uploading the file directly instead');
-      }
-
-      // Detect file type
-      let fileType = blob.type;
-      let fileName = 'google-drive-invoice';
-      
-      if (fileType === 'application/pdf' || blob.type.includes('pdf')) {
-        fileName += '.pdf';
-        fileType = 'application/pdf';
-      } else if (blob.type.includes('image')) {
-        fileName += blob.type.includes('png') ? '.png' : '.jpg';
-        fileType = blob.type;
-      } else {
-        // Default to PDF if type is unclear
-        fileName += '.pdf';
-        fileType = 'application/pdf';
-      }
-
-      const file = new File([blob], fileName, { type: fileType });
-      
-      console.log('File downloaded:', fileName, 'Size:', (blob.size / 1024).toFixed(2), 'KB');
-      
-      setFile(file);
-      
-      setProcessingSteps(prev => prev.map((s, i) => 
-        i === 0 ? { ...s, status: 'complete' } : i === 1 ? { ...s, status: 'processing' } : s
-      ));
-
-      console.log('Loading OCR libraries...');
       await loadLibraries();
       
       let text = '';
-      
-      if (fileType === 'application/pdf') {
-        console.log('Processing PDF from Google Drive...');
+      if (file.type === 'application/pdf') {
         text = await extractTextFromPDF(file);
       } else {
-        console.log('Processing image from Google Drive with OCR...');
         text = await performOCR(file);
       }
       
-      console.log('Extraction complete. Text length:', text.length);
       setExtractedText(text);
-      
       setProcessingSteps(prev => prev.map((s, i) => 
         i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s
       ));
       
-      // AI-powered data extraction
-      console.log('Using AI to extract invoice data...');
       const aiExtractedData = await extractWithAI(text);
       
       setProcessingSteps(prev => prev.map((s, i) => 
         i === 2 ? { ...s, status: 'complete' } : i === 3 ? { ...s, status: 'processing' } : s
       ));
       
-      await new Promise(resolve => setTimeout(resolve, 800));
-      
-      setProcessingSteps(prev => prev.map((s, i) => 
-        i === 3 ? { ...s, status: 'complete' } : i === 4 ? { ...s, status: 'processing' } : s
-      ));
-      
-      await new Promise(resolve => setTimeout(resolve, 600));
-      
+      await new Promise(resolve => setTimeout(resolve, 500));
       setProcessingSteps(prev => prev.map(s => ({ ...s, status: 'complete' })));
       
       setExtractedData(aiExtractedData);
-      
-      alert('Google Drive invoice processed successfully! Review the AI-extracted data below.');
+      alert('Invoice processed successfully!');
     } catch (error: any) {
-      console.error('Error processing Google Drive invoice:', error);
+      console.error('Error processing invoice:', error);
       setProcessingSteps(prev => prev.map((s) => 
         s.status === 'processing' ? { ...s, status: 'error' } : s
       ));
-      alert(`Google Drive processing failed: ${error.message}\n\nTip: Try downloading the file and using the File Upload tab instead.`);
+      alert(`Processing failed: ${error.message}`);
+    } finally {
+      setUploading(false);
+      setProcessing(false);
+    }
+  };
+
+  const processSelectedDriveFile = async () => {
+    if (!selectedDriveFile || !accessToken) return;
+
+    setUploading(true);
+    setProcessing(true);
+    setProcessingSteps([
+      { step: 'Downloading from Google Drive...', status: 'processing' },
+      { step: 'Running OCR extraction...', status: 'pending' },
+      { step: 'Extracting invoice data with AI...', status: 'pending' },
+      { step: 'Validating data...', status: 'pending' },
+    ]);
+
+    try {
+      const fileMetadata = driveFiles.find(f => f.id === selectedDriveFile);
+      
+      const response = await fetch(
+        `/api/drive/download-file?fileId=${selectedDriveFile}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`
+          }
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to download file from Google Drive');
+      }
+
+      const blob = await response.blob();
+      const downloadedFile = new File([blob], fileMetadata.name, { type: fileMetadata.mimeType });
+      
+      setFile(downloadedFile);
+      setProcessingSteps(prev => prev.map((s, i) => 
+        i === 0 ? { ...s, status: 'complete' } : i === 1 ? { ...s, status: 'processing' } : s
+      ));
+
+      await loadLibraries();
+      
+      let text = '';
+      if (downloadedFile.type === 'application/pdf') {
+        text = await extractTextFromPDF(downloadedFile);
+      } else {
+        text = await performOCR(downloadedFile);
+      }
+      
+      setExtractedText(text);
+      setProcessingSteps(prev => prev.map((s, i) => 
+        i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s
+      ));
+      
+      const aiExtractedData = await extractWithAI(text);
+      
+      setProcessingSteps(prev => prev.map((s, i) => 
+        i === 2 ? { ...s, status: 'complete' } : i === 3 ? { ...s, status: 'processing' } : s
+      ));
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
+      setProcessingSteps(prev => prev.map(s => ({ ...s, status: 'complete' })));
+      
+      setExtractedData(aiExtractedData);
+      alert('Invoice processed successfully from Google Drive!');
+      
+    } catch (error: any) {
+      console.error('Processing error:', error);
+      setProcessingSteps(prev => prev.map(s => 
+        s.status === 'processing' ? { ...s, status: 'error' } : s
+      ));
+      alert(`Error: ${error.message}`);
     } finally {
       setUploading(false);
       setProcessing(false);
@@ -610,19 +483,34 @@ Return only the JSON object, no markdown formatting or explanation.`
     setFile(null);
     setExtractedData(null);
     setProcessingSteps([]);
-    setGoogleDriveUrl('');
     setExtractedText('');
+    setSelectedDriveFile(null);
     setOcrProgress(0);
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
       <div className="max-w-3xl mx-auto space-y-8">
-        <div>
-          <h1 className="text-3xl font-bold">Upload Invoice</h1>
-          <p className="text-gray-600 mt-1">
-            Upload invoices via file, Google Drive, or email
-          </p>
+        <div className="flex justify-between items-start">
+          <div>
+            <h1 className="text-3xl font-bold">Upload Invoice</h1>
+            <p className="text-gray-600 mt-1">
+              Upload invoices via file, Google Drive, or email
+            </p>
+          </div>
+          
+          {isAuthenticated && (
+            <div className="flex items-center gap-3">
+              <div className="text-right">
+                <p className="text-xs text-gray-500">Logged in as</p>
+                <p className="text-sm font-medium">{userEmail}</p>
+              </div>
+              <Button variant="outline" size="sm" onClick={handleSignOut}>
+                <X className="h-4 w-4 mr-2" />
+                Logout
+              </Button>
+            </div>
+          )}
         </div>
 
         <Tabs value={uploadMethod} onValueChange={(v) => setUploadMethod(v as any)} className="space-y-6">
@@ -729,43 +617,115 @@ Return only the JSON object, no markdown formatting or explanation.`
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
                   <HardDrive className="h-5 w-5 text-blue-600" />
-                  Import from Google Drive
+                  Import from Your Google Drive
                 </CardTitle>
                 <CardDescription>
-                  Paste a Google Drive sharing link to import your invoice
+                  Access files directly from your Google Drive account
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="drive-url">Google Drive Share Link</Label>
-                  <Input
-                    id="drive-url"
-                    placeholder="https://drive.google.com/file/d/..."
-                    value={googleDriveUrl}
-                    onChange={(e) => setGoogleDriveUrl(e.target.value)}
-                  />
-                  <p className="text-xs text-gray-600">
-                    Make sure the file is set to "Anyone with the link can view"
-                  </p>
-                </div>
-
-                <Button
-                  className="w-full bg-blue-600 hover:bg-blue-700"
-                  onClick={processGoogleDriveFile}
-                  disabled={!googleDriveUrl || uploading || processing}
-                >
-                  {uploading || processing ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                      Processing...
-                    </>
-                  ) : (
-                    <>
-                      <HardDrive className="h-4 w-4 mr-2" />
-                      Import & Process
-                    </>
-                  )}
-                </Button>
+                {!isAuthenticated ? (
+                  <div className="text-center py-8">
+                    <HardDrive className="h-16 w-16 mx-auto mb-4 text-gray-400" />
+                    <p className="text-sm text-gray-600 mb-4">
+                      Sign in with Google to access your Drive files
+                    </p>
+                    <Button 
+                      onClick={handleGoogleSignIn}
+                      className="bg-blue-600 hover:bg-blue-700"
+                    >
+                      <LogIn className="h-4 w-4 mr-2" />
+                      Sign in with Google
+                    </Button>
+                    <p className="text-xs text-gray-500 mt-4">
+                      You will be able to browse and select invoice files from your Google Drive
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <Alert>
+                      <AlertDescription>
+                        Logged in as: <strong>{userEmail}</strong>
+                      </AlertDescription>
+                    </Alert>
+                    
+                    {driveFiles.length === 0 ? (
+                      <div className="text-center py-6">
+                        <Button onClick={fetchDriveFiles} disabled={uploading} className="bg-blue-600 hover:bg-blue-700">
+                          {uploading ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                              Loading...
+                            </>
+                          ) : (
+                            <>
+                              <HardDrive className="h-4 w-4 mr-2" />
+                              Browse My Drive Files
+                            </>
+                          )}
+                        </Button>
+                        <p className="text-xs text-gray-500 mt-3">
+                          Click to load your PDF and image files from Google Drive
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <Label>Select a file from your Drive:</Label>
+                          <Button variant="ghost" size="sm" onClick={fetchDriveFiles}>
+                            <RefreshCw className="h-4 w-4 mr-2" />
+                            Refresh
+                          </Button>
+                        </div>
+                        <div className="border rounded-lg max-h-64 overflow-y-auto">
+                          {driveFiles.map((file) => (
+                            <div
+                              key={file.id}
+                              onClick={() => setSelectedDriveFile(file.id)}
+                              className={`p-3 border-b cursor-pointer hover:bg-gray-50 transition-colors ${
+                                selectedDriveFile === file.id ? 'bg-blue-50 border-blue-300' : ''
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                {file.mimeType === 'application/pdf' ? (
+                                  <FileText className="h-5 w-5 text-red-600" />
+                                ) : (
+                                  <Image className="h-5 w-5 text-blue-600" />
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium truncate">{file.name}</p>
+                                  <p className="text-xs text-gray-500">
+                                    {new Date(file.modifiedTime).toLocaleDateString()} • {(file.size / 1024).toFixed(0)} KB
+                                  </p>
+                                </div>
+                                {selectedDriveFile === file.id && (
+                                  <CheckCircle2 className="h-5 w-5 text-blue-600 flex-shrink-0" />
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <Button
+                          className="w-full bg-blue-600 hover:bg-blue-700"
+                          onClick={processSelectedDriveFile}
+                          disabled={!selectedDriveFile || uploading || processing}
+                        >
+                          {uploading || processing ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                              Processing...
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="h-4 w-4 mr-2" />
+                              Process Selected File
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -775,65 +735,46 @@ Return only the JSON object, no markdown formatting or explanation.`
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
                   <Mail className="h-5 w-5 text-blue-600" />
-                  Email Invoices
+                  Gmail Integration
                 </CardTitle>
                 <CardDescription>
-                  Forward invoices to your personal email address for automatic processing
+                  Automatically process invoice emails from your Gmail
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="p-4 rounded-xl bg-gray-100 border border-gray-300">
-                  <p className="text-sm text-gray-600 mb-2">Your unique email address:</p>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 px-3 py-2 bg-white rounded-lg text-sm font-mono">
-                      {emailAddress}
-                    </code>
-                    <Button variant="outline" size="icon" onClick={copyEmailToClipboard}>
-                      <Copy className="h-4 w-4" />
+              <CardContent>
+                {!isAuthenticated ? (
+                  <div className="text-center py-8">
+                    <Mail className="h-16 w-16 mx-auto mb-4 text-gray-400" />
+                    <p className="text-sm text-gray-600 mb-4">
+                      Sign in with Google to enable Gmail integration
+                    </p>
+                    <Button 
+                      onClick={handleGoogleSignIn}
+                      className="bg-blue-600 hover:bg-blue-700"
+                    >
+                      <LogIn className="h-4 w-4 mr-2" />
+                      Sign in with Google
                     </Button>
                   </div>
-                </div>
-
-                <div className="space-y-3">
-                  <h4 className="font-medium">How it works:</h4>
-                  <div className="space-y-2">
-                    <div className="flex items-start gap-3 p-3 rounded-lg bg-gray-50">
-                      <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 text-xs font-bold text-blue-600">1</div>
-                      <p className="text-sm text-gray-600">Forward any invoice email to your unique address above</p>
-                    </div>
-                    <div className="flex items-start gap-3 p-3 rounded-lg bg-gray-50">
-                      <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 text-xs font-bold text-blue-600">2</div>
-                      <p className="text-sm text-gray-600">Our system automatically detects PDF/image attachments</p>
-                    </div>
-                    <div className="flex items-start gap-3 p-3 rounded-lg bg-gray-50">
-                      <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 text-xs font-bold text-blue-600">3</div>
-                      <p className="text-sm text-gray-600">AI processes the invoice using OCR + intelligent extraction</p>
-                    </div>
-                    <div className="flex items-start gap-3 p-3 rounded-lg bg-gray-50">
-                      <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 text-xs font-bold text-blue-600">4</div>
-                      <p className="text-sm text-gray-600">Processed invoices appear in your dashboard within minutes</p>
+                ) : (
+                  <div className="space-y-4">
+                    <Alert>
+                      <AlertDescription>
+                        Connected to: <strong>{userEmail}</strong>
+                      </AlertDescription>
+                    </Alert>
+                    
+                    <div className="text-center py-8 text-gray-500">
+                      <Mail className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+                      <p className="text-sm mb-2">
+                        Gmail integration coming soon!
+                      </p>
+                      <p className="text-xs text-blue-600">
+                        Auto-scan inbox for invoice attachments
+                      </p>
                     </div>
                   </div>
-                </div>
-
-                <div className="p-4 rounded-xl bg-blue-50 border border-blue-200">
-                  <p className="text-sm text-blue-800">
-                    <strong>Pro tip:</strong> Set up email forwarding rules in Gmail to automatically send vendor invoices to this address!
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-green-50 border border-green-200">
-                  <h5 className="text-sm font-semibold text-green-900 mb-2">Backend Integration Available:</h5>
-                  <p className="text-xs text-green-800 mb-3">
-                    Email processing works via webhook automation platforms like Make.com or Zapier:
-                  </p>
-                  <ul className="text-xs text-green-700 space-y-1 ml-4">
-                    <li>• Gmail receives forwarded invoice → Triggers Make.com scenario</li>
-                    <li>• Make.com extracts attachment → Sends to this app's API</li>
-                    <li>• OCR + AI processes invoice → Stores in database</li>
-                    <li>• You receive notification when processing completes</li>
-                  </ul>
-                </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -870,6 +811,21 @@ Return only the JSON object, no markdown formatting or explanation.`
                   </span>
                 </div>
               ))}
+              
+              {ocrProgress > 0 && ocrProgress < 100 && (
+                <div className="mt-4">
+                  <div className="flex justify-between text-xs text-gray-600 mb-1">
+                    <span>OCR Progress</span>
+                    <span>{ocrProgress}%</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${ocrProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
