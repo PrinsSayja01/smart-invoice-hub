@@ -1,4 +1,3 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,19 +5,6 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Upload, FileText, Image, X, Loader2, CheckCircle2, AlertCircle, Mail, HardDrive, LogIn, RefreshCw } from 'lucide-react';
-
-// Helper to safely get Supabase URL
-const getSupabaseUrl = (): string => {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  if (!url) {
-    if (process.env.NODE_ENV === 'development') {
-      console.warn('Using fallback Supabase URL. Set NEXT_PUBLIC_SUPABASE_URL in .env.local');
-      return 'https://tkpogjvlepwrsswqzsdu.supabase.co';
-    }
-    throw new Error('Missing NEXT_PUBLIC_SUPABASE_URL in production');
-  }
-  return url;
-};
 
 interface ExtractedData {
   vendor_name: string;
@@ -30,11 +16,16 @@ interface ExtractedData {
 }
 
 export default function UploadInvoice() {
+  // Mock session - Replace with your actual auth state from your Supabase implementation
+  // In your actual code, get this from wherever you store auth state
   const [session, setSession] = useState<any>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   
   useEffect(() => {
+    // Replace this with your actual session retrieval logic
+    // Example: Get from your auth context, Redux store, or localStorage
     const checkAuth = () => {
+      // Check if user is logged in via your existing auth system
       const token = localStorage.getItem('auth_token');
       const userSession = localStorage.getItem('user_session');
       
@@ -49,6 +40,8 @@ export default function UploadInvoice() {
     };
     
     checkAuth();
+    
+    // Listen for auth changes if you have an event system
     window.addEventListener('auth-change', checkAuth);
     return () => window.removeEventListener('auth-change', checkAuth);
   }, []);
@@ -109,23 +102,28 @@ export default function UploadInvoice() {
   };
 
   const handleGoogleSignIn = async () => {
-    const supabaseUrl = getSupabaseUrl();
+    // This redirects to your Google OAuth flow
+    // Replace this URL with your actual Supabase auth endpoint
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://tkpogjvlepwrsswqzsdu.supabase.co  ';
     const redirectUri = encodeURIComponent(window.location.origin + '/invoice-upload');
     
-    // Clean scopes — no extra spaces
+    // Construct the Google OAuth URL with Drive and Gmail scopes
     const scopes = encodeURIComponent(
-      'email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly'
+      'email profile https://www.googleapis.com/auth/drive.readonly   https://www.googleapis.com/auth/gmail.readonly  '
     );
     
+    // Redirect to Supabase Google auth endpoint
     window.location.href = `${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectUri}&scopes=${scopes}`;
   };
 
   const handleSignOut = async () => {
     try {
-      const supabaseUrl = getSupabaseUrl();
+      // Call your logout endpoint or clear local storage
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://tkpogjvlepwrsswqzsdu.supabase.co  ';
       const token = authToken || session?.access_token;
       
       if (token) {
+        // Optional: Call Supabase logout endpoint
         await fetch(`${supabaseUrl}/auth/v1/logout`, {
           method: 'POST',
           headers: {
@@ -135,6 +133,7 @@ export default function UploadInvoice() {
         });
       }
       
+      // Clear local storage
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user_session');
       localStorage.removeItem('supabase_session');
@@ -145,6 +144,7 @@ export default function UploadInvoice() {
       setSelectedDriveFile(null);
       setExtractedData(null);
       
+      // Dispatch auth change event
       window.dispatchEvent(new Event('auth-change'));
     } catch (error: any) {
       console.error('Sign out error:', error);
@@ -195,7 +195,7 @@ export default function UploadInvoice() {
     try {
       if (!(window as any).Tesseract) {
         const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+        script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js  ';
         document.head.appendChild(script);
         await new Promise((resolve, reject) => {
           script.onload = resolve;
@@ -206,12 +206,12 @@ export default function UploadInvoice() {
       
       if (!(window as any).pdfjsLib) {
         const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js  ';
         document.head.appendChild(script);
         await new Promise((resolve, reject) => {
           script.onload = () => {
             (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc = 
-              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js  ';
             resolve(null);
           };
           script.onerror = () => reject(new Error('Failed to load PDF.js'));
@@ -298,16 +298,13 @@ export default function UploadInvoice() {
 
   const extractWithAI = async (text: string): Promise<ExtractedData> => {
     try {
-      // ⚠️ You still need to add your Anthropic API key!
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("https://api.anthropic.com/v1/messages  ", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY!, // Add this to .env.local
-          "anthropic-version": "2023-06-01"
         },
         body: JSON.stringify({
-          model: "claude-3-5-sonnet-20241022", // Updated model name
+          model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
           messages: [
             {
@@ -322,11 +319,6 @@ Return only the JSON object, no markdown formatting or explanation.`
           ],
         }),
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Anthropic API error: ${response.status} - ${errorText}`);
-      }
 
       const data = await response.json();
       const aiResponse = data.content[0].text.trim();
@@ -898,4 +890,48 @@ Return only the JSON object, no markdown formatting or explanation.`
                     type="number"
                     step="0.01"
                     value={extractedData.tax_amount}
-                    onChange={(e) => handleInputChange('tax_amount', e.target
+                    onChange={(e) => handleInputChange('tax_amount', e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {extractedText && (
+                <details className="mt-4">
+                  <summary className="text-sm font-semibold text-gray-700 cursor-pointer hover:text-blue-600">
+                    View extracted text ({extractedText.length} characters)
+                  </summary>
+                  <pre className="mt-3 p-4 bg-gray-50 rounded-lg text-xs overflow-auto max-h-48 border-2 border-gray-200">
+                    {extractedText}
+                  </pre>
+                </details>
+              )}
+
+              <div className="flex gap-3 pt-4">
+                <Button variant="outline" onClick={resetForm}>
+                  Cancel
+                </Button>
+                <Button
+                  className="flex-1 bg-blue-600 hover:bg-blue-700"
+                  onClick={saveInvoice}
+                  disabled={uploading}
+                >
+                  {uploading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-4 w-4 mr-2" />
+                      Save Invoice
+                    </>
+                  )}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
