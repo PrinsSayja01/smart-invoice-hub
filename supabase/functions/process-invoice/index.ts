@@ -54,11 +54,14 @@ serve(async (req) => {
       );
     }
 
-    // ✅ Hugging Face Router (OpenAI-compatible endpoint)
+    // ✅ Hugging Face Router OpenAI-compatible endpoint
     const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
 
-    // ✅ Free-friendly model (fast + available)
-    const MODEL = "google/gemini-3-flash-preview";
+    // ✅ REAL Hugging Face model (your previous one was not an HF model)
+    // You can swap between these if one is rate-limited:
+    // - "HuggingFaceH4/zephyr-7b-beta"
+    // - "mistralai/Mistral-7B-Instruct-v0.2"
+    const MODEL = "HuggingFaceH4/zephyr-7b-beta";
 
     const prompt = `
 Extract invoice data from the text below.
@@ -73,8 +76,9 @@ Return ONLY a valid JSON object with these exact fields:
 - invoice_type (services/goods/medical/other)
 - language (en)
 
-If information is missing, guess realistic values.
-No markdown. No explanation. Only JSON.
+Rules:
+- Output must be ONLY JSON (no markdown, no explanation).
+- If missing, guess realistic values.
 
 File name: ${fileName}
 File type: ${fileType}
@@ -92,11 +96,11 @@ ${extractedText}
       body: JSON.stringify({
         model: MODEL,
         messages: [
-          { role: "system", content: "Return only valid JSON. No extra text." },
+          { role: "system", content: "Return ONLY valid JSON. No extra text." },
           { role: "user", content: prompt },
         ],
         temperature: 0.2,
-        max_tokens: 400,
+        max_tokens: 500,
       }),
     });
 
@@ -120,11 +124,7 @@ ${extractedText}
     }
 
     const hfJson = safeJsonParse<any>(hfText, {});
-    const content =
-      hfJson?.choices?.[0]?.message?.content ||
-      hfJson?.choices?.[0]?.delta?.content ||
-      "";
-
+    const content = hfJson?.choices?.[0]?.message?.content || "";
     const parsed = extractJsonObject(String(content).trim());
 
     const fallback = {
@@ -141,7 +141,7 @@ ${extractedText}
     const extractedData =
       parsed && typeof parsed === "object" ? { ...fallback, ...parsed } : fallback;
 
-    // Fraud/compliance logic
+    // Basic fraud/compliance scoring
     const anomalies: string[] = [];
     const total = Number(extractedData.total_amount || 0);
 
