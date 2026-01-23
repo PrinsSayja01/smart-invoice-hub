@@ -1,3 +1,4 @@
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,16 +17,11 @@ interface ExtractedData {
 }
 
 export default function UploadInvoice() {
-  // Mock session - Replace with your actual auth state from your Supabase implementation
-  // In your actual code, get this from wherever you store auth state
   const [session, setSession] = useState<any>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   
   useEffect(() => {
-    // Replace this with your actual session retrieval logic
-    // Example: Get from your auth context, Redux store, or localStorage
     const checkAuth = () => {
-      // Check if user is logged in via your existing auth system
       const token = localStorage.getItem('auth_token');
       const userSession = localStorage.getItem('user_session');
       
@@ -40,8 +36,6 @@ export default function UploadInvoice() {
     };
     
     checkAuth();
-    
-    // Listen for auth changes if you have an event system
     window.addEventListener('auth-change', checkAuth);
     return () => window.removeEventListener('auth-change', checkAuth);
   }, []);
@@ -102,28 +96,21 @@ export default function UploadInvoice() {
   };
 
   const handleGoogleSignIn = async () => {
-    // This redirects to your Google OAuth flow
-    // Replace this URL with your actual Supabase auth endpoint
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://tkpogjvlepwrsswqzsdu.supabase.co  ';
+    const supabaseUrl = 'https://tkpogjvlepwrsswqzsdu.supabase.co';
     const redirectUri = encodeURIComponent(window.location.origin + '/invoice-upload');
-    
-    // Construct the Google OAuth URL with Drive and Gmail scopes
     const scopes = encodeURIComponent(
-      'email profile https://www.googleapis.com/auth/drive.readonly   https://www.googleapis.com/auth/gmail.readonly  '
+      'email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly'
     );
     
-    // Redirect to Supabase Google auth endpoint
     window.location.href = `${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectUri}&scopes=${scopes}`;
   };
 
   const handleSignOut = async () => {
     try {
-      // Call your logout endpoint or clear local storage
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://tkpogjvlepwrsswqzsdu.supabase.co  ';
+      const supabaseUrl = 'https://tkpogjvlepwrsswqzsdu.supabase.co';
       const token = authToken || session?.access_token;
       
       if (token) {
-        // Optional: Call Supabase logout endpoint
         await fetch(`${supabaseUrl}/auth/v1/logout`, {
           method: 'POST',
           headers: {
@@ -133,7 +120,6 @@ export default function UploadInvoice() {
         });
       }
       
-      // Clear local storage
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user_session');
       localStorage.removeItem('supabase_session');
@@ -144,7 +130,6 @@ export default function UploadInvoice() {
       setSelectedDriveFile(null);
       setExtractedData(null);
       
-      // Dispatch auth change event
       window.dispatchEvent(new Event('auth-change'));
     } catch (error: any) {
       console.error('Sign out error:', error);
@@ -195,7 +180,7 @@ export default function UploadInvoice() {
     try {
       if (!(window as any).Tesseract) {
         const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js  ';
+        script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
         document.head.appendChild(script);
         await new Promise((resolve, reject) => {
           script.onload = resolve;
@@ -206,12 +191,12 @@ export default function UploadInvoice() {
       
       if (!(window as any).pdfjsLib) {
         const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js  ';
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
         document.head.appendChild(script);
         await new Promise((resolve, reject) => {
           script.onload = () => {
             (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc = 
-              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js  ';
+              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
             resolve(null);
           };
           script.onerror = () => reject(new Error('Failed to load PDF.js'));
@@ -298,7 +283,7 @@ export default function UploadInvoice() {
 
   const extractWithAI = async (text: string): Promise<ExtractedData> => {
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages  ", {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
