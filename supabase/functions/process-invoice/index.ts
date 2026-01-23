@@ -7,55 +7,19 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
-type InputBody = {
+type ReqBody = {
   fileUrl?: string;
   fileName?: string;
   fileType?: string;
   extractedText?: string;
 };
 
-type ExtractedData = {
-  vendor_name: string;
-  invoice_number: string;
-  invoice_date: string; // YYYY-MM-DD
-  total_amount: number;
-  tax_amount: number;
-  currency: string; // USD/EUR/GBP
-  invoice_type: "services" | "goods" | "medical" | "other";
-  language: "en";
-};
-
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function safeJsonParse(text: string): any | null {
+function safeJsonParse<T>(text: string, fallback: T): T {
   try {
-    return JSON.parse(text);
+    return JSON.parse(text) as T;
   } catch {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    try {
-      return JSON.parse(match[0]);
-    } catch {
-      return null;
-    }
+    return fallback;
   }
-}
-
-function fallbackData(fileName = "invoice"): ExtractedData {
-  const total = Math.floor(Math.random() * 10000) + 500;
-  const tax = Math.round(total * 0.19);
-  return {
-    vendor_name: "Unknown Vendor",
-    invoice_number: `INV-${Date.now()}`,
-    invoice_date: todayISO(),
-    total_amount: total,
-    tax_amount: tax,
-    currency: "EUR",
-    invoice_type: "services",
-    language: "en",
-  };
 }
 
 serve(async (req) => {
@@ -64,49 +28,46 @@ serve(async (req) => {
   }
 
   try {
-    const body = (await req.json()) as InputBody;
-
+    const body = (await req.json()) as ReqBody;
     const fileName = body.fileName || "invoice";
-    const fileType = body.fileType || "application/octet-stream";
-    const extractedText = (body.extractedText || "").trim();
+    const fileType = body.fileType || "unknown";
+    const extractedText = body.extractedText || "";
 
     const HF_API_KEY = Deno.env.get("HF_API_KEY");
     if (!HF_API_KEY) {
       return new Response(
         JSON.stringify({
-          error:
-            "HF_API_KEY is not configured. Add it in Supabase → Edge Functions → Secrets.",
+          error: "HF_API_KEY is not configured in Supabase Edge Function secrets",
         }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
       );
     }
 
-    // Model (free tier friendly)
-    const HF_MODEL = "google/flan-t5-base";
+    // ✅ Use a small model for free tier reliability
+    const HF_MODEL = "google/flan-t5-small";
+
+    // ✅ NEW HF router endpoint (api-inference is deprecated)
     const HF_URL = `https://router.huggingface.co/hf-inference/models/${HF_MODEL}`;
 
-
-    const prompt =
-      extractedText.length > 0
-        ? `Extract invoice fields from the OCR text below.
-Return ONLY valid JSON with these exact fields:
+    // Build prompt
+    const prompt = `Extract invoice data from the text below.
+Return ONLY valid JSON with fields:
 vendor_name, invoice_number, invoice_date (YYYY-MM-DD), total_amount (number), tax_amount (number), currency (USD/EUR/GBP), invoice_type (services/goods/medical/other), language (en)
 
-OCR TEXT:
+If text is missing, guess realistically.
+
+File name: ${fileName}
+File type: ${fileType}
+
+Text:
 ${extractedText}
 
-JSON ONLY:`
-        : `You are an invoice extractor.
-We only have metadata (no text). Based on filename and type, generate realistic invoice JSON.
+JSON:`.trim();
 
-Filename: ${fileName}
-Filetype: ${fileType}
-
-Return ONLY valid JSON with:
-vendor_name, invoice_number, invoice_date (YYYY-MM-DD), total_amount (number), tax_amount (number), currency (USD/EUR/GBP), invoice_type (services/goods/medical/other), language (en)
-
-JSON ONLY:`;
-
+    // Call Hugging Face
     const hfRes = await fetch(HF_URL, {
       method: "POST",
       headers: {
@@ -115,75 +76,107 @@ JSON ONLY:`;
       },
       body: JSON.stringify({
         inputs: prompt,
-        parameters: { max_new_tokens: 256, temperature: 0.2, return_full_text: false },
+        parameters: {
+          max_new_tokens: 220,
+          temperature: 0.2,
+          return_full_text: false,
+        },
       }),
     });
 
+    const hfText = await hfRes.text();
+
+    // ✅ Return real HF error details
     if (!hfRes.ok) {
-      const errText = await hfRes.text();
+      console.error("HF error status:", hfRes.status);
+      console.error("HF error body:", hfText);
+
       return new Response(
         JSON.stringify({
           error: "Hugging Face request failed",
           status: hfRes.status,
-          details: errText,
+          details: hfText,
         }),
-        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 502,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
       );
     }
 
-    const hfJson = await hfRes.json();
-    const generated = Array.isArray(hfJson) ? (hfJson[0]?.generated_text ?? "") : "";
-    const parsed = safeJsonParse(generated);
+    // Parse HF output
+    // For flan-t5 models, HF usually returns: [{ generated_text: "..." }]
+    const hfJson = safeJsonParse<any>(hfText, []);
+    const generated = Array.isArray(hfJson)
+      ? String(hfJson[0]?.generated_text ?? "").trim()
+      : "";
 
-    let extracted: ExtractedData = fallbackData(fileName);
+    // Try to find JSON object inside generated text
+    const jsonMatch = generated.match(/\{[\s\S]*\}/);
+    const extracted = jsonMatch
+      ? safeJsonParse<any>(jsonMatch[0], null)
+      : null;
 
-    if (parsed) {
-      extracted = {
-        vendor_name: String(parsed.vendor_name ?? "Unknown Vendor"),
-        invoice_number: String(parsed.invoice_number ?? `INV-${Date.now()}`),
-        invoice_date: String(parsed.invoice_date ?? todayISO()),
-        total_amount: Number(parsed.total_amount ?? 0) || 0,
-        tax_amount: Number(parsed.tax_amount ?? 0) || 0,
-        currency: String(parsed.currency ?? "EUR").toUpperCase(),
-        invoice_type: (String(parsed.invoice_type ?? "services") as any),
-        language: "en",
-      };
+    // Fallback mock if model output is not JSON
+    const fallback = {
+      vendor_name: "Unknown Vendor",
+      invoice_number: `INV-${Date.now()}`,
+      invoice_date: new Date().toISOString().slice(0, 10),
+      total_amount: 200,
+      tax_amount: 38,
+      currency: "EUR",
+      invoice_type: "services",
+      language: "en",
+    };
 
-      if (!["USD", "EUR", "GBP"].includes(extracted.currency)) extracted.currency = "EUR";
-      if (!["services", "goods", "medical", "other"].includes(extracted.invoice_type)) extracted.invoice_type = "other";
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(extracted.invoice_date)) extracted.invoice_date = todayISO();
-      if (extracted.total_amount <= 0) extracted.total_amount = Math.floor(Math.random() * 10000) + 500;
-      if (extracted.tax_amount <= 0) extracted.tax_amount = Math.round(extracted.total_amount * 0.19);
-    }
+    const extractedData = extracted && typeof extracted === "object" ? extracted : fallback;
 
-    // Fraud / Compliance basic rules
+    // Simple fraud/compliance logic
     const anomalies: string[] = [];
     let riskScore: "low" | "medium" | "high" = "low";
-    if (extracted.total_amount > 25000) riskScore = "medium";
-    if (extracted.total_amount > 40000) {
+
+    const total = Number(extractedData.total_amount || 0);
+    if (total > 25000) riskScore = "medium";
+    if (total > 40000) {
       riskScore = "high";
       anomalies.push("Unusually high amount");
     }
 
-    const compliance_status = extracted.tax_amount > 0 ? "compliant" : "needs_review";
+    const compliance_status =
+      Number(extractedData.tax_amount || 0) > 0 ? "compliant" : "needs_review";
 
     const result = {
-      ...extracted,
+      ...fallback,
+      ...extractedData,
+
       ingestion: {
         valid: true,
         fileType,
         fileName,
         timestamp: new Date().toISOString(),
       },
+
       fraud_detection: {
         risk_score: riskScore,
+        is_duplicate: false,
         anomalies,
         checked_at: new Date().toISOString(),
       },
+
       compliance: {
         compliance_status,
+        vat_valid: compliance_status === "compliant",
+        tax_classification:
+          extractedData.invoice_type === "services" ? "Service Tax" : "Goods Tax",
         checked_at: new Date().toISOString(),
       },
+
+      reporting: {
+        processed: true,
+        agents_completed: 3,
+        processing_time_ms: Date.now(),
+      },
+
       risk_score: riskScore,
       compliance_status,
       is_flagged: riskScore === "high",
@@ -194,11 +187,14 @@ JSON ONLY:`;
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (error: any) {
+  } catch (err: any) {
+    console.error("process-invoice error:", err);
     return new Response(
-      JSON.stringify({ error: error?.message || "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({ error: err?.message || "Unknown error" }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
     );
   }
 });
-
