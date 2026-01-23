@@ -19,6 +19,17 @@ export default async function handler(
     const supabaseUrl = 'https://tkpogjvlepwrsswqzsdu.supabase.co'
     const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
+    const sessionResponse = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'apikey': supabaseAnonKey!
+      }
+    })
+
+    if (!sessionResponse.ok) {
+      return res.status(401).json({ error: 'Invalid session' })
+    }
+
     const providerTokenResponse = await fetch(`${supabaseUrl}/auth/v1/user`, {
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -26,23 +37,21 @@ export default async function handler(
       }
     })
 
-    if (!providerTokenResponse.ok) {
-      return res.status(401).json({ error: 'Invalid session' })
-    }
-
     const userData = await providerTokenResponse.json()
     const providerToken = userData.app_metadata?.provider_token || userData.identities?.[0]?.identity_data?.provider_token
 
     if (!providerToken) {
       return res.status(401).json({ 
-        error: 'Please log out and log back in to grant Gmail access' 
+        error: 'Please log out and log back in to grant Drive access' 
       })
     }
 
-    const gmailResponse = await fetch(
-      'https://gmail.googleapis.com/gmail/v1/users/me/messages?' +
-      'q=has:attachment (invoice OR receipt OR bill)&' +
-      'maxResults=20',
+    const driveResponse = await fetch(
+      'https://www.googleapis.com/drive/v3/files?' +
+      'q=mimeType="application/pdf" or mimeType="image/jpeg" or mimeType="image/png"&' +
+      'fields=files(id,name,mimeType,modifiedTime,size)&' +
+      'orderBy=modifiedTime desc&' +
+      'pageSize=50',
       {
         headers: {
           'Authorization': `Bearer ${providerToken}`
@@ -50,16 +59,16 @@ export default async function handler(
       }
     )
 
-    if (!gmailResponse.ok) {
-      const error = await gmailResponse.json()
-      throw new Error(error.error?.message || 'Failed to fetch messages')
+    if (!driveResponse.ok) {
+      const error = await driveResponse.json()
+      throw new Error(error.error?.message || 'Failed to fetch files')
     }
 
-    const data = await gmailResponse.json()
+    const data = await driveResponse.json()
     return res.status(200).json(data)
 
   } catch (error: any) {
-    console.error('Gmail API error:', error)
+    console.error('Drive API error:', error)
     return res.status(500).json({ error: error.message })
   }
 }
