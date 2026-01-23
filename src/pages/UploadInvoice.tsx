@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Upload, FileText, Image, X, Loader2, CheckCircle2, AlertCircle, Mail, HardDrive, LogIn, RefreshCw } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
 
 interface ExtractedData {
   vendor_name: string;
@@ -19,12 +20,12 @@ interface ExtractedData {
 export default function UploadInvoice() {
   const [session, setSession] = useState<any>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
-  
+
   useEffect(() => {
     const checkAuth = () => {
       const token = localStorage.getItem('auth_token');
       const userSession = localStorage.getItem('user_session');
-      
+
       if (token && userSession) {
         setAuthToken(token);
         try {
@@ -34,12 +35,12 @@ export default function UploadInvoice() {
         }
       }
     };
-    
+
     checkAuth();
     window.addEventListener('auth-change', checkAuth);
     return () => window.removeEventListener('auth-change', checkAuth);
   }, []);
-  
+
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -54,7 +55,7 @@ export default function UploadInvoice() {
   const [driveFiles, setDriveFiles] = useState<any[]>([]);
   const [selectedDriveFile, setSelectedDriveFile] = useState<string | null>(null);
   const [ocrProgress, setOcrProgress] = useState(0);
-  
+
   const workerRef = useRef<any>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -101,7 +102,7 @@ export default function UploadInvoice() {
     const scopes = encodeURIComponent(
       'email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly'
     );
-    
+
     window.location.href = `${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectUri}&scopes=${scopes}`;
   };
 
@@ -109,7 +110,7 @@ export default function UploadInvoice() {
     try {
       const supabaseUrl = 'https://tkpogjvlepwrsswqzsdu.supabase.co';
       const token = authToken || session?.access_token;
-      
+
       if (token) {
         await fetch(`${supabaseUrl}/auth/v1/logout`, {
           method: 'POST',
@@ -119,17 +120,17 @@ export default function UploadInvoice() {
           }
         });
       }
-      
+
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user_session');
       localStorage.removeItem('supabase_session');
-      
+
       setSession(null);
       setAuthToken(null);
       setDriveFiles([]);
       setSelectedDriveFile(null);
       setExtractedData(null);
-      
+
       window.dispatchEvent(new Event('auth-change'));
     } catch (error: any) {
       console.error('Sign out error:', error);
@@ -144,7 +145,7 @@ export default function UploadInvoice() {
 
     try {
       setUploading(true);
-      
+
       const response = await fetch('/api/drive/list-files', {
         headers: {
           'Authorization': `Bearer ${accessToken}`
@@ -158,14 +159,14 @@ export default function UploadInvoice() {
 
       const data = await response.json();
       setDriveFiles(data.files || []);
-      
+
       if (data.files?.length === 0) {
         alert('No PDF or image files found in your Google Drive. Upload some invoices to your Drive first!');
       }
-      
+
     } catch (error: any) {
       console.error('Drive fetch error:', error);
-      
+
       if (error.message.includes('re-authenticate') || error.message.includes('provider token')) {
         alert('Please log out and log back in to grant Google Drive access permissions.');
       } else {
@@ -188,14 +189,14 @@ export default function UploadInvoice() {
           setTimeout(() => reject(new Error('Tesseract.js load timeout')), 10000);
         });
       }
-      
+
       if (!(window as any).pdfjsLib) {
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
         document.head.appendChild(script);
         await new Promise((resolve, reject) => {
           script.onload = () => {
-            (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc = 
+            (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
               'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
             resolve(null);
           };
@@ -203,7 +204,7 @@ export default function UploadInvoice() {
           setTimeout(() => reject(new Error('PDF.js load timeout')), 10000);
         });
       }
-      
+
       return true;
     } catch (error) {
       console.error('Library loading error:', error);
@@ -217,25 +218,25 @@ export default function UploadInvoice() {
     const pdfjsLib = (window as any).pdfjsLib;
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     let fullText = '';
-    
+
     if (!canvasRef.current) canvasRef.current = document.createElement('canvas');
     const canvas = canvasRef.current;
     const context = canvas.getContext('2d');
-    
+
     for (let i = 1; i <= Math.min(pdf.numPages, 3); i++) {
       setOcrProgress(10 + (i / pdf.numPages) * 40);
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
       const pageText = textContent.items.map((item: any) => item.str).join(' ');
-      
+
       if (pageText.trim().length > 50) {
         fullText += pageText + '\n';
       } else {
         const viewport = page.getViewport({ scale: 2.0 });
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-        await page.render({ canvasContext: context, viewport }).promise;
-        
+        await page.render({ canvasContext: context!, viewport }).promise;
+
         if (!workerRef.current) {
           workerRef.current = await (window as any).Tesseract.createWorker('eng');
         }
@@ -253,11 +254,11 @@ export default function UploadInvoice() {
       reader.onload = async (e) => {
         try {
           setOcrProgress(10);
-          
+
           if (!(window as any).Tesseract) {
             throw new Error('Tesseract library not loaded');
           }
-          
+
           if (!workerRef.current) {
             workerRef.current = await (window as any).Tesseract.createWorker('eng', 1, {
               logger: (m: any) => {
@@ -267,7 +268,7 @@ export default function UploadInvoice() {
               }
             });
           }
-          
+
           const { data: { text } } = await workerRef.current.recognize(e.target?.result);
           setOcrProgress(100);
           resolve(text);
@@ -281,50 +282,32 @@ export default function UploadInvoice() {
     });
   }, []);
 
-  const extractWithAI = async (text: string): Promise<ExtractedData> => {
+  // ✅ UPDATED: call Supabase Edge Function instead of Anthropic browser call
+  const extractWithAI = async (_text: string): Promise<ExtractedData> => {
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+      if (!file) throw new Error('No file selected');
+
+      const { data, error } = await supabase.functions.invoke('process-invoice', {
+        body: {
+          fileUrl: '',
+          fileName: file.name,
+          fileType: file.type || 'application/octet-stream',
         },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [
-            {
-              role: "user",
-              content: `Extract invoice information from this text and return ONLY a JSON object with these exact fields: vendor_name, invoice_number, invoice_date (YYYY-MM-DD format), total_amount (number only), tax_amount (number only), currency (3-letter code).
-
-Text:
-${text}
-
-Return only the JSON object, no markdown formatting or explanation.`
-            }
-          ],
-        }),
       });
 
-      const data = await response.json();
-      const aiResponse = data.content[0].text.trim();
-      
-      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return {
-          vendor_name: parsed.vendor_name || '',
-          invoice_number: parsed.invoice_number || '',
-          invoice_date: parsed.invoice_date || '',
-          total_amount: parsed.total_amount?.toString() || '',
-          tax_amount: parsed.tax_amount?.toString() || '',
-          currency: parsed.currency || 'USD'
-        };
-      }
-      
-      throw new Error('Failed to parse AI response');
-    } catch (error) {
+      if (error) throw error;
+
+      return {
+        vendor_name: data?.vendor_name || '',
+        invoice_number: data?.invoice_number || '',
+        invoice_date: data?.invoice_date || '',
+        total_amount: (data?.total_amount ?? '').toString(),
+        tax_amount: (data?.tax_amount ?? '').toString(),
+        currency: data?.currency || 'USD',
+      };
+    } catch (error: any) {
       console.error('AI extraction failed:', error);
-      throw error;
+      throw new Error(error?.message || 'AI extraction failed');
     }
   };
 
@@ -342,33 +325,33 @@ Return only the JSON object, no markdown formatting or explanation.`
 
     try {
       await loadLibraries();
-      
+
       let text = '';
       if (file.type === 'application/pdf') {
         text = await extractTextFromPDF(file);
       } else {
         text = await performOCR(file);
       }
-      
+
       setExtractedText(text);
-      setProcessingSteps(prev => prev.map((s, i) => 
+      setProcessingSteps(prev => prev.map((s, i) =>
         i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s
       ));
-      
+
       const aiExtractedData = await extractWithAI(text);
-      
-      setProcessingSteps(prev => prev.map((s, i) => 
+
+      setProcessingSteps(prev => prev.map((s, i) =>
         i === 2 ? { ...s, status: 'complete' } : i === 3 ? { ...s, status: 'processing' } : s
       ));
-      
+
       await new Promise(resolve => setTimeout(resolve, 500));
       setProcessingSteps(prev => prev.map(s => ({ ...s, status: 'complete' })));
-      
+
       setExtractedData(aiExtractedData);
       alert('Invoice processed successfully!');
     } catch (error: any) {
       console.error('Error processing invoice:', error);
-      setProcessingSteps(prev => prev.map((s) => 
+      setProcessingSteps(prev => prev.map((s) =>
         s.status === 'processing' ? { ...s, status: 'error' } : s
       ));
       alert(`Processing failed: ${error.message}`);
@@ -392,7 +375,7 @@ Return only the JSON object, no markdown formatting or explanation.`
 
     try {
       const fileMetadata = driveFiles.find(f => f.id === selectedDriveFile);
-      
+
       const response = await fetch(
         `/api/drive/download-file?fileId=${selectedDriveFile}`,
         {
@@ -408,41 +391,42 @@ Return only the JSON object, no markdown formatting or explanation.`
 
       const blob = await response.blob();
       const downloadedFile = new File([blob], fileMetadata.name, { type: fileMetadata.mimeType });
-      
+
       setFile(downloadedFile);
-      setProcessingSteps(prev => prev.map((s, i) => 
+      setProcessingSteps(prev => prev.map((s, i) =>
         i === 0 ? { ...s, status: 'complete' } : i === 1 ? { ...s, status: 'processing' } : s
       ));
 
       await loadLibraries();
-      
+
       let text = '';
       if (downloadedFile.type === 'application/pdf') {
         text = await extractTextFromPDF(downloadedFile);
       } else {
         text = await performOCR(downloadedFile);
       }
-      
+
       setExtractedText(text);
-      setProcessingSteps(prev => prev.map((s, i) => 
+      setProcessingSteps(prev => prev.map((s, i) =>
         i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s
       ));
-      
+
+      // ✅ will use current file state; setFile already set above
       const aiExtractedData = await extractWithAI(text);
-      
-      setProcessingSteps(prev => prev.map((s, i) => 
+
+      setProcessingSteps(prev => prev.map((s, i) =>
         i === 2 ? { ...s, status: 'complete' } : i === 3 ? { ...s, status: 'processing' } : s
       ));
-      
+
       await new Promise(resolve => setTimeout(resolve, 500));
       setProcessingSteps(prev => prev.map(s => ({ ...s, status: 'complete' })));
-      
+
       setExtractedData(aiExtractedData);
       alert('Invoice processed successfully from Google Drive!');
-      
+
     } catch (error: any) {
       console.error('Processing error:', error);
-      setProcessingSteps(prev => prev.map(s => 
+      setProcessingSteps(prev => prev.map(s =>
         s.status === 'processing' ? { ...s, status: 'error' } : s
       ));
       alert(`Error: ${error.message}`);
@@ -483,7 +467,7 @@ Return only the JSON object, no markdown formatting or explanation.`
               Upload invoices via file, Google Drive, or email
             </p>
           </div>
-          
+
           {isAuthenticated && (
             <div className="flex items-center gap-3">
               <div className="text-right">
@@ -597,6 +581,7 @@ Return only the JSON object, no markdown formatting or explanation.`
             </Card>
           </TabsContent>
 
+          {/* Drive + Email sections unchanged (kept as you provided) */}
           <TabsContent value="drive">
             <Card>
               <CardHeader>
@@ -615,7 +600,7 @@ Return only the JSON object, no markdown formatting or explanation.`
                     <p className="text-sm text-gray-600 mb-4">
                       Sign in with Google to access your Drive files
                     </p>
-                    <Button 
+                    <Button
                       onClick={handleGoogleSignIn}
                       className="bg-blue-600 hover:bg-blue-700"
                     >
@@ -633,7 +618,7 @@ Return only the JSON object, no markdown formatting or explanation.`
                         Logged in as: <strong>{userEmail}</strong>
                       </AlertDescription>
                     </Alert>
-                    
+
                     {driveFiles.length === 0 ? (
                       <div className="text-center py-6">
                         <Button onClick={fetchDriveFiles} disabled={uploading} className="bg-blue-600 hover:bg-blue-700">
@@ -733,7 +718,7 @@ Return only the JSON object, no markdown formatting or explanation.`
                     <p className="text-sm text-gray-600 mb-4">
                       Sign in with Google to enable Gmail integration
                     </p>
-                    <Button 
+                    <Button
                       onClick={handleGoogleSignIn}
                       className="bg-blue-600 hover:bg-blue-700"
                     >
@@ -748,7 +733,7 @@ Return only the JSON object, no markdown formatting or explanation.`
                         Connected to: <strong>{userEmail}</strong>
                       </AlertDescription>
                     </Alert>
-                    
+
                     <div className="text-center py-8 text-gray-500">
                       <Mail className="h-12 w-12 mx-auto mb-4 text-gray-400" />
                       <p className="text-sm mb-2">
@@ -796,7 +781,7 @@ Return only the JSON object, no markdown formatting or explanation.`
                   </span>
                 </div>
               ))}
-              
+
               {ocrProgress > 0 && ocrProgress < 100 && (
                 <div className="mt-4">
                   <div className="flex justify-between text-xs text-gray-600 mb-1">
@@ -804,7 +789,7 @@ Return only the JSON object, no markdown formatting or explanation.`
                     <span>{ocrProgress}%</span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div 
+                    <div
                       className="bg-blue-600 h-2 rounded-full transition-all duration-300"
                       style={{ width: `${ocrProgress}%` }}
                     />
