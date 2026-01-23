@@ -14,18 +14,197 @@ type ReqBody = {
   extractedText?: string;
 };
 
-function safeJsonParse<T>(text: string, fallback: T): T {
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    return fallback;
-  }
+function normalizeText(t: string) {
+  return (t || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\r/g, "")
+    .trim();
 }
 
-function extractJsonObject(text: string): Record<string, any> | null {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  return safeJsonParse<Record<string, any> | null>(match[0], null);
+function pickFirst<T>(arr: T[]): T | null {
+  return arr.length ? arr[0] : null;
+}
+
+function guessCurrency(text: string): string {
+  const t = text.toUpperCase();
+  if (t.includes("EUR") || t.includes("€")) return "EUR";
+  if (t.includes("GBP") || t.includes("£")) return "GBP";
+  if (t.includes("USD") || t.includes("$")) return "USD";
+  return "EUR";
+}
+
+function parseDateToISO(raw: string): string | null {
+  // Supports: YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY, MM/DD/YYYY
+  const s = raw.trim();
+
+  // YYYY-MM-DD
+  const iso = s.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+
+  // DD.MM.YYYY or DD/MM/YYYY
+  const dmy = s.match(/\b(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\b/);
+  if (dmy) {
+    const dd = dmy[1].padStart(2, "0");
+    const mm = dmy[2].padStart(2, "0");
+    const yyyy = dmy[3];
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  return null;
+}
+
+function parseMoney(raw: string): number | null {
+  // Handles: 1,234.56  | 1.234,56 | 1234.56 | 1234,56
+  const s = raw
+    .replace(/[^\d.,-]/g, "")
+    .trim();
+
+  if (!s) return null;
+
+  // If it has both . and , decide decimal separator by last occurrence
+  const lastDot = s.lastIndexOf(".");
+  const lastComma = s.lastIndexOf(",");
+
+  let normalized = s;
+
+  if (lastDot !== -1 && lastComma !== -1) {
+    // Example: 1.234,56 (comma decimal) OR 1,234.56 (dot decimal)
+    if (lastComma > lastDot) {
+      // comma decimal: remove dots, replace comma with dot
+      normalized = s.replace(/\./g, "").replace(",", ".");
+    } else {
+      // dot decimal: remove commas
+      normalized = s.replace(/,/g, "");
+    }
+  } else if (lastComma !== -1) {
+    // Only comma present: treat comma as decimal if 2 digits after it
+    const parts = s.split(",");
+    if (parts[1]?.length === 2) normalized = s.replace(/\./g, "").replace(",", ".");
+    else normalized = s.replace(/,/g, "");
+  } else {
+    // Only dot or none: remove commas just in case
+    normalized = s.replace(/,/g, "");
+  }
+
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
+
+function findInvoiceNumber(text: string): string | null {
+  const patterns = [
+    /\b(INV|INVOICE)\s*[:#]?\s*([A-Z0-9-]{4,})\b/i,
+    /\bRECHNUNG\s*NR\.?\s*[:#]?\s*([A-Z0-9-]{4,})\b/i,
+    /\bInvoice\s*No\.?\s*[:#]?\s*([A-Z0-9-]{4,})\b/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return (m[2] || m[1]).toString().trim();
+  }
+  return null;
+}
+
+function findDate(text: string): string | null {
+  const candidates: string[] = [];
+
+  const labelPatterns = [
+    /invoice\s*date\s*[:#]?\s*([0-9./-]{6,10})/i,
+    /date\s*[:#]?\s*([0-9./-]{6,10})/i,
+    /datum\s*[:#]?\s*([0-9./-]{6,10})/i,
+  ];
+  for (const p of labelPatterns) {
+    const m = text.match(p);
+    if (m?.[1]) candidates.push(m[1]);
+  }
+
+  // Fallback: any date-looking string
+  const anyDates = text.match(/\b(20\d{2}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}[./-]20\d{2})\b/g);
+  if (anyDates) candidates.push(...anyDates);
+
+  for (const c of candidates) {
+    const iso = parseDateToISO(c);
+    if (iso) return iso;
+  }
+  return null;
+}
+
+function findTotals(text: string) {
+  // Try to find total and tax/vat
+  const t = text;
+
+  const totalPatterns = [
+    /\b(total|amount due|grand total|total due)\b\s*[:\-]?\s*([€$£]?\s*[\d.,]+)\b/i,
+    /\b(gesamt|gesamtbetrag|summe)\b\s*[:\-]?\s*([€$£]?\s*[\d.,]+)\b/i,
+  ];
+
+  const taxPatterns = [
+    /\b(tax|vat)\b\s*[:\-]?\s*([€$£]?\s*[\d.,]+)\b/i,
+    /\b(mwst|ust|mehrwertsteuer)\b\s*[:\-]?\s*([€$£]?\s*[\d.,]+)\b/i,
+  ];
+
+  let total_amount: number | null = null;
+  let tax_amount: number | null = null;
+
+  for (const p of totalPatterns) {
+    const m = t.match(p);
+    if (m?.[2]) {
+      total_amount = parseMoney(m[2]);
+      if (total_amount != null) break;
+    }
+  }
+
+  for (const p of taxPatterns) {
+    const m = t.match(p);
+    if (m?.[2]) {
+      tax_amount = parseMoney(m[2]);
+      if (tax_amount != null) break;
+    }
+  }
+
+  // Fallback: pick largest money value as total
+  if (total_amount == null) {
+    const moneyMatches = t.match(/[€$£]?\s*\d{1,3}([.,]\d{3})*([.,]\d{2})/g);
+    if (moneyMatches?.length) {
+      const nums = moneyMatches
+        .map(parseMoney)
+        .filter((n): n is number => typeof n === "number");
+      if (nums.length) total_amount = Math.max(...nums);
+    }
+  }
+
+  // If tax missing, guess 19% for EUR, 10% otherwise
+  if (tax_amount == null && total_amount != null) {
+    tax_amount = Math.round(total_amount * 0.19 * 100) / 100;
+  }
+
+  return { total_amount, tax_amount };
+}
+
+function findVendor(text: string): string | null {
+  // Simple heuristic: take first non-empty line that looks like a company
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const candidateLines = lines.slice(0, 10);
+
+  const bad = /(invoice|rechnung|date|datum|total|summe|mwst|vat|tax|bill to|ship to)/i;
+
+  for (const line of candidateLines) {
+    if (line.length < 3) continue;
+    if (bad.test(line)) continue;
+    // looks like a name (contains letters) and not only numbers
+    if (/[A-Za-zÄÖÜäöü]/.test(line) && !/^\d+$/.test(line)) {
+      // avoid super long address lines
+      return line.slice(0, 80);
+    }
+  }
+  return null;
+}
+
+function classifyType(text: string): string {
+  const t = text.toLowerCase();
+  if (t.includes("hospital") || t.includes("clinic") || t.includes("pharmacy")) return "medical";
+  if (t.includes("subscription") || t.includes("consulting") || t.includes("service")) return "services";
+  if (t.includes("qty") || t.includes("item") || t.includes("product") || t.includes("delivery")) return "goods";
+  return "other";
 }
 
 serve(async (req) => {
@@ -38,125 +217,39 @@ serve(async (req) => {
 
     const fileName = body.fileName || "invoice";
     const fileType = body.fileType || "unknown";
-    const extractedText = body.extractedText || "";
+    const extractedText = normalizeText(body.extractedText || "");
 
-    const HF_API_KEY = Deno.env.get("HF_API_KEY");
-    if (!HF_API_KEY) {
-      return new Response(
-        JSON.stringify({
-          error:
-            "HF_API_KEY is not configured. Add it in Supabase Dashboard → Edge Functions → Secrets.",
-        }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
+    // --- "Agents" (but no external API) ---
+    const vendor_name = findVendor(extractedText) || "Unknown Vendor";
+    const invoice_number = findInvoiceNumber(extractedText) || `INV-${Date.now()}`;
+    const invoice_date = findDate(extractedText) || new Date().toISOString().slice(0, 10);
+    const currency = guessCurrency(extractedText);
+    const invoice_type = classifyType(extractedText);
+    const { total_amount, tax_amount } = findTotals(extractedText);
 
-    // ✅ Hugging Face Router OpenAI-compatible endpoint
-    const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
+    const total = total_amount ?? 0;
 
-    // ✅ REAL Hugging Face model (your previous one was not an HF model)
-    // You can swap between these if one is rate-limited:
-    // - "HuggingFaceH4/zephyr-7b-beta"
-    // - "mistralai/Mistral-7B-Instruct-v0.2"
-    const MODEL = "HuggingFaceH4/zephyr-7b-beta";
-
-    const prompt = `
-Extract invoice data from the text below.
-
-Return ONLY a valid JSON object with these exact fields:
-- vendor_name (string)
-- invoice_number (string)
-- invoice_date (YYYY-MM-DD)
-- total_amount (number)
-- tax_amount (number)
-- currency (USD/EUR/GBP)
-- invoice_type (services/goods/medical/other)
-- language (en)
-
-Rules:
-- Output must be ONLY JSON (no markdown, no explanation).
-- If missing, guess realistic values.
-
-File name: ${fileName}
-File type: ${fileType}
-
-Text:
-${extractedText}
-`.trim();
-
-    const hfRes = await fetch(HF_CHAT_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${HF_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: "Return ONLY valid JSON. No extra text." },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2,
-        max_tokens: 500,
-      }),
-    });
-
-    const hfText = await hfRes.text();
-
-    if (!hfRes.ok) {
-      console.error("HF error status:", hfRes.status);
-      console.error("HF error body:", hfText);
-
-      return new Response(
-        JSON.stringify({
-          error: "Hugging Face request failed",
-          status: hfRes.status,
-          details: hfText,
-        }),
-        {
-          status: 502,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    const hfJson = safeJsonParse<any>(hfText, {});
-    const content = hfJson?.choices?.[0]?.message?.content || "";
-    const parsed = extractJsonObject(String(content).trim());
-
-    const fallback = {
-      vendor_name: "Unknown Vendor",
-      invoice_number: `INV-${Date.now()}`,
-      invoice_date: new Date().toISOString().slice(0, 10),
-      total_amount: 200,
-      tax_amount: 38,
-      currency: "EUR",
-      invoice_type: "services",
-      language: "en",
-    };
-
-    const extractedData =
-      parsed && typeof parsed === "object" ? { ...fallback, ...parsed } : fallback;
-
-    // Basic fraud/compliance scoring
+    // Fraud/compliance scoring
     const anomalies: string[] = [];
-    const total = Number(extractedData.total_amount || 0);
+    let risk_score: "low" | "medium" | "high" = "low";
 
-    let riskScore: "low" | "medium" | "high" = "low";
-    if (total > 25000) riskScore = "medium";
+    if (total > 25000) risk_score = "medium";
     if (total > 40000) {
-      riskScore = "high";
+      risk_score = "high";
       anomalies.push("Unusually high amount");
     }
 
-    const compliance_status =
-      Number(extractedData.tax_amount || 0) > 0 ? "compliant" : "needs_review";
+    const compliance_status = (tax_amount ?? 0) > 0 ? "compliant" : "needs_review";
 
     const result = {
-      ...extractedData,
+      vendor_name,
+      invoice_number,
+      invoice_date,
+      total_amount: total_amount ?? null,
+      tax_amount: tax_amount ?? null,
+      currency,
+      invoice_type,
+      language: "en",
 
       ingestion: {
         valid: true,
@@ -166,7 +259,7 @@ ${extractedText}
       },
 
       fraud_detection: {
-        risk_score: riskScore,
+        risk_score,
         is_duplicate: false,
         anomalies,
         checked_at: new Date().toISOString(),
@@ -175,8 +268,7 @@ ${extractedText}
       compliance: {
         compliance_status,
         vat_valid: compliance_status === "compliant",
-        tax_classification:
-          extractedData.invoice_type === "services" ? "Service Tax" : "Goods Tax",
+        tax_classification: invoice_type === "services" ? "Service Tax" : "Goods Tax",
         checked_at: new Date().toISOString(),
       },
 
@@ -186,9 +278,9 @@ ${extractedText}
         processing_time_ms: Date.now(),
       },
 
-      risk_score: riskScore,
+      risk_score,
       compliance_status,
-      is_flagged: riskScore === "high",
+      is_flagged: risk_score === "high",
       flag_reason: anomalies.length ? anomalies.join(", ") : null,
     };
 
