@@ -22,6 +22,12 @@ function safeJsonParse<T>(text: string, fallback: T): T {
   }
 }
 
+function extractJsonObject(text: string): Record<string, any> | null {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  return safeJsonParse<Record<string, any> | null>(match[0], null);
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -29,6 +35,7 @@ serve(async (req) => {
 
   try {
     const body = (await req.json()) as ReqBody;
+
     const fileName = body.fileName || "invoice";
     const fileType = body.fileType || "unknown";
     const extractedText = body.extractedText || "";
@@ -37,7 +44,8 @@ serve(async (req) => {
     if (!HF_API_KEY) {
       return new Response(
         JSON.stringify({
-          error: "HF_API_KEY is not configured in Supabase Edge Function secrets",
+          error:
+            "HF_API_KEY is not configured. Add it in Supabase Dashboard → Edge Functions → Secrets.",
         }),
         {
           status: 500,
@@ -46,47 +54,54 @@ serve(async (req) => {
       );
     }
 
-    // ✅ Use a small model for free tier reliability
-    const HF_MODEL = "google/flan-t5-small";
+    // ✅ Hugging Face Router (OpenAI-compatible endpoint)
+    const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
 
-    // ✅ NEW HF router endpoint (api-inference is deprecated)
-    const HF_URL = `https://router.huggingface.co/hf-inference/models/${HF_MODEL}`;
+    // ✅ Free-friendly model (fast + available)
+    const MODEL = "google/gemini-3-flash-preview";
 
-    // Build prompt
-    const prompt = `Extract invoice data from the text below.
-Return ONLY valid JSON with fields:
-vendor_name, invoice_number, invoice_date (YYYY-MM-DD), total_amount (number), tax_amount (number), currency (USD/EUR/GBP), invoice_type (services/goods/medical/other), language (en)
+    const prompt = `
+Extract invoice data from the text below.
 
-If text is missing, guess realistically.
+Return ONLY a valid JSON object with these exact fields:
+- vendor_name (string)
+- invoice_number (string)
+- invoice_date (YYYY-MM-DD)
+- total_amount (number)
+- tax_amount (number)
+- currency (USD/EUR/GBP)
+- invoice_type (services/goods/medical/other)
+- language (en)
+
+If information is missing, guess realistic values.
+No markdown. No explanation. Only JSON.
 
 File name: ${fileName}
 File type: ${fileType}
 
 Text:
 ${extractedText}
+`.trim();
 
-JSON:`.trim();
-
-    // Call Hugging Face
-    const hfRes = await fetch(HF_URL, {
+    const hfRes = await fetch(HF_CHAT_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${HF_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: 220,
-          temperature: 0.2,
-          return_full_text: false,
-        },
+        model: MODEL,
+        messages: [
+          { role: "system", content: "Return only valid JSON. No extra text." },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.2,
+        max_tokens: 400,
       }),
     });
 
     const hfText = await hfRes.text();
 
-    // ✅ Return real HF error details
     if (!hfRes.ok) {
       console.error("HF error status:", hfRes.status);
       console.error("HF error body:", hfText);
@@ -104,20 +119,14 @@ JSON:`.trim();
       );
     }
 
-    // Parse HF output
-    // For flan-t5 models, HF usually returns: [{ generated_text: "..." }]
-    const hfJson = safeJsonParse<any>(hfText, []);
-    const generated = Array.isArray(hfJson)
-      ? String(hfJson[0]?.generated_text ?? "").trim()
-      : "";
+    const hfJson = safeJsonParse<any>(hfText, {});
+    const content =
+      hfJson?.choices?.[0]?.message?.content ||
+      hfJson?.choices?.[0]?.delta?.content ||
+      "";
 
-    // Try to find JSON object inside generated text
-    const jsonMatch = generated.match(/\{[\s\S]*\}/);
-    const extracted = jsonMatch
-      ? safeJsonParse<any>(jsonMatch[0], null)
-      : null;
+    const parsed = extractJsonObject(String(content).trim());
 
-    // Fallback mock if model output is not JSON
     const fallback = {
       vendor_name: "Unknown Vendor",
       invoice_number: `INV-${Date.now()}`,
@@ -129,13 +138,14 @@ JSON:`.trim();
       language: "en",
     };
 
-    const extractedData = extracted && typeof extracted === "object" ? extracted : fallback;
+    const extractedData =
+      parsed && typeof parsed === "object" ? { ...fallback, ...parsed } : fallback;
 
-    // Simple fraud/compliance logic
+    // Fraud/compliance logic
     const anomalies: string[] = [];
-    let riskScore: "low" | "medium" | "high" = "low";
-
     const total = Number(extractedData.total_amount || 0);
+
+    let riskScore: "low" | "medium" | "high" = "low";
     if (total > 25000) riskScore = "medium";
     if (total > 40000) {
       riskScore = "high";
@@ -146,7 +156,6 @@ JSON:`.trim();
       Number(extractedData.tax_amount || 0) > 0 ? "compliant" : "needs_review";
 
     const result = {
-      ...fallback,
       ...extractedData,
 
       ingestion: {
