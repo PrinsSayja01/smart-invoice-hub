@@ -126,7 +126,8 @@ Rules:
 
     // Hugging Face model
     const HF_MODEL = "google/flan-t5-base";
-    const HF_URL = `https://api-inference.huggingface.co/models/${HF_MODEL}`;
+    const HF_URL = `https://router.huggingface.co/hf-inference/models/${HF_MODEL}`;
+
 
     // Build a single prompt for T5-style models
     const prompt = `${systemPrompt}
