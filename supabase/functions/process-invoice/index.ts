@@ -83,7 +83,8 @@ serve(async (req) => {
 
     // Model (free tier friendly)
     const HF_MODEL = "google/flan-t5-base";
-    const HF_URL = `https://api-inference.huggingface.co/models/${HF_MODEL}`;
+    const HF_URL = `https://router.huggingface.co/hf-inference/models/${HF_MODEL}`;
+
 
     const prompt =
       extractedText.length > 0
@@ -200,3 +201,4 @@ JSON ONLY:`;
     );
   }
 });
+
