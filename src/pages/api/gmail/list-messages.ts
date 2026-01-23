@@ -1,4 +1,3 @@
-import { createClient } from '@supabase/supabase-js'
 import type { NextApiRequest, NextApiResponse } from 'next'
 
 export default async function handler(
@@ -17,29 +16,29 @@ export default async function handler(
 
     const token = authHeader.replace('Bearer ', '')
 
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        global: {
-          headers: { Authorization: `Bearer ${token}` }
-        }
+    const supabaseUrl = 'https://tkpogjvlepwrsswqzsdu.supabase.co'
+    const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+    const providerTokenResponse = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'apikey': supabaseAnonKey!
       }
-    )
+    })
 
-    const { data: { session }, error } = await supabase.auth.getSession()
-
-    if (error || !session) {
+    if (!providerTokenResponse.ok) {
       return res.status(401).json({ error: 'Invalid session' })
     }
 
-    const providerToken = session.provider_token
+    const userData = await providerTokenResponse.json()
+    const providerToken = userData.app_metadata?.provider_token || userData.identities?.[0]?.identity_data?.provider_token
 
     if (!providerToken) {
-      return res.status(401).json({ error: 'No provider token' })
+      return res.status(401).json({ 
+        error: 'Please log out and log back in to grant Gmail access' 
+      })
     }
 
-    // Call Gmail API
     const gmailResponse = await fetch(
       'https://gmail.googleapis.com/gmail/v1/users/me/messages?' +
       'q=has:attachment (invoice OR receipt OR bill)&' +
