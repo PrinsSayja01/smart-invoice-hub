@@ -1,4 +1,3 @@
-import { createClient } from '@supabase/supabase-js'
 import type { NextApiRequest, NextApiResponse } from 'next'
 
 export default async function handler(
@@ -23,29 +22,27 @@ export default async function handler(
 
     const token = authHeader.replace('Bearer ', '')
 
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        global: {
-          headers: { Authorization: `Bearer ${token}` }
-        }
+    const supabaseUrl = 'https://tkpogjvlepwrsswqzsdu.supabase.co'
+    const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+    const providerTokenResponse = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'apikey': supabaseAnonKey!
       }
-    )
+    })
 
-    const { data: { session }, error } = await supabase.auth.getSession()
-
-    if (error || !session) {
+    if (!providerTokenResponse.ok) {
       return res.status(401).json({ error: 'Invalid session' })
     }
 
-    const providerToken = session.provider_token
+    const userData = await providerTokenResponse.json()
+    const providerToken = userData.app_metadata?.provider_token || userData.identities?.[0]?.identity_data?.provider_token
 
     if (!providerToken) {
       return res.status(401).json({ error: 'No provider token' })
     }
 
-    // Download file from Google Drive
     const driveResponse = await fetch(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       {
