@@ -282,27 +282,38 @@ export default function UploadInvoice() {
 
   // ✅ DRIVE LIST via Edge Function (NO /api route)
   const fetchDriveFiles = async () => {
-    try {
-      setUploading(true);
+  if (!providerToken) {
+    alert("Google provider token missing. Logout & login again and accept Drive permission.");
+    return;
+  }
 
-      if (!providerToken) {
-        throw new Error("Google provider token missing. Logout and login again, then accept Drive permission.");
+  try {
+    setUploading(true);
+
+    const { data, error } = await supabase.functions.invoke("drive-list", {
+      body: { providerToken },
+    });
+
+    if (error) {
+      // IMPORTANT: read response body from error.context.response
+      const res = (error as any)?.context?.response;
+      if (res) {
+        const text = await res.text();
+        alert(`Drive error:\n${text}`);
+      } else {
+        alert("Drive error: " + error.message);
       }
-
-      const { data, error } = await supabase.functions.invoke("drive-list", {
-        body: { providerToken },
-      });
-
-      if (error) throw new Error(error.message);
-
-      setDriveFiles(data?.files || []);
-      if (!data?.files?.length) alert("No PDF/image invoices found in Drive.");
-    } catch (err: any) {
-      alert(`Drive error: ${err.message}`);
-    } finally {
-      setUploading(false);
+      return;
     }
-  };
+
+    setDriveFiles(data?.files || []);
+    if (!data?.files?.length) alert("No PDF or image files found in your Google Drive.");
+  } catch (e: any) {
+    alert("Drive error: " + (e?.message || "Unknown error"));
+  } finally {
+    setUploading(false);
+  }
+};
 
   // ✅ DRIVE DOWNLOAD via Edge Function (base64 response)
   const processSelectedDriveFile = async () => {
