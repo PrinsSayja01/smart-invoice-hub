@@ -734,12 +734,6 @@ export default function UploadInvoice() {
             </CardContent>
           </Card>
         )}
-useEffect(() => {
-  (async () => {
-    const { data } = await supabase.auth.getSession();
-    console.log("GOOGLE provider_token:", data.session?.provider_token);
-  })();
-}, []);
 
         {/* Review + Save */}
         {extractedData && (
