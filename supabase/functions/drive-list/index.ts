@@ -11,6 +11,7 @@ serve(async (req) => {
 
   try {
     const { providerToken } = await req.json();
+
     if (!providerToken) {
       return new Response(JSON.stringify({ error: "Missing providerToken" }), {
         status: 400,
@@ -19,13 +20,16 @@ serve(async (req) => {
     }
 
     const q = encodeURIComponent(`trashed=false and (mimeType='application/pdf' or mimeType contains 'image/')`);
-    const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=50`;
+    const url =
+      `https://www.googleapis.com/drive/v3/files` +
+      `?q=${q}&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=50&orderBy=modifiedTime desc`;
 
     const r = await fetch(url, {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
     const txt = await r.text();
+
     if (!r.ok) {
       return new Response(JSON.stringify({ error: "Google Drive API failed", status: r.status, details: txt }), {
         status: 502,

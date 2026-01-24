@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { encode as b64encode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,6 +12,7 @@ serve(async (req) => {
 
   try {
     const { providerToken, fileId } = await req.json();
+
     if (!providerToken || !fileId) {
       return new Response(JSON.stringify({ error: "Missing providerToken or fileId" }), {
         status: 400,
@@ -18,7 +20,6 @@ serve(async (req) => {
       });
     }
 
-    // Download file bytes
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
 
     const r = await fetch(url, {
@@ -33,11 +34,11 @@ serve(async (req) => {
       });
     }
 
-    const buf = new Uint8Array(await r.arrayBuffer());
-    // Return as base64 so browser can reconstruct File
-    const b64 = btoa(String.fromCharCode(...buf));
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    const base64 = b64encode(bytes);
+    const contentType = r.headers.get("content-type") || "application/octet-stream";
 
-    return new Response(JSON.stringify({ base64: b64 }), {
+    return new Response(JSON.stringify({ base64, contentType }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
@@ -48,4 +49,3 @@ serve(async (req) => {
     });
   }
 });
-
