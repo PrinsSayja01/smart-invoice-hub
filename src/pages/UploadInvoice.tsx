@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +19,7 @@ import {
   LogIn,
   RefreshCw,
 } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
 
 interface ExtractedData {
   vendor_name: string;
@@ -55,25 +55,26 @@ function base64ToUint8Array(b64: string) {
 }
 
 export default function UploadInvoice() {
+<<<<<<< HEAD
   const { toast } = useToast();
 
   const [session, setSession] = useState<any>(null);
   const [userEmail, setUserEmail] = useState<string>("");
   const [userId, setUserId] = useState<string>("");
 
+=======
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
-
   const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
   const [extractedText, setExtractedText] = useState("");
 
   const [processingSteps, setProcessingSteps] = useState<
     { step: string; status: StepStatus }[]
   >([]);
-
   const [uploadMethod, setUploadMethod] = useState<"file" | "drive" | "email">("file");
 
   const [driveFiles, setDriveFiles] = useState<any[]>([]);
@@ -83,6 +84,7 @@ export default function UploadInvoice() {
   const workerRef = useRef<any>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+<<<<<<< HEAD
   // ---------------------------
   // Auth (Supabase)
   // ---------------------------
@@ -102,11 +104,32 @@ export default function UploadInvoice() {
       setDriveFiles([]);
       setSelectedDriveFile(null);
       setExtractedData(null);
+=======
+  const [sessionUserEmail, setSessionUserEmail] = useState<string | null>(null);
+  const [providerToken, setProviderToken] = useState<string | null>(null);
+
+  // ✅ Always load current session from Supabase (not localStorage hacks)
+  useEffect(() => {
+    const loadSession = async () => {
+      const { data } = await supabase.auth.getSession();
+      const s = data.session;
+
+      setSessionUserEmail(s?.user?.email ?? null);
+      setProviderToken((s as any)?.provider_token ?? null);
+    };
+
+    loadSession();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSessionUserEmail(newSession?.user?.email ?? null);
+      setProviderToken((newSession as any)?.provider_token ?? null);
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
     });
 
     return () => sub.subscription.unsubscribe();
   }, []);
 
+<<<<<<< HEAD
   const isAuthenticated = !!session?.user;
 
   const handleGoogleSignIn = async () => {
@@ -134,6 +157,13 @@ export default function UploadInvoice() {
         description: corsSafeError(e),
       });
     }
+=======
+  const isAuthenticated = !!sessionUserEmail;
+
+  const isValidFileType = (f: File) => {
+    const validTypes = ["application/pdf", "image/jpeg", "image/png", "image/jpg"];
+    return validTypes.includes(f.type);
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
   };
 
   const handleSignOut = async () => {
@@ -192,18 +222,52 @@ export default function UploadInvoice() {
     }
   };
 
+<<<<<<< HEAD
   // ---------------------------
   // OCR Libraries
   // ---------------------------
+=======
+  // ✅ Correct Google login with scopes + prompt consent
+  const handleGoogleSignIn = async () => {
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/dashboard/upload`,
+        scopes:
+          "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly",
+        queryParams: {
+          access_type: "offline",
+          prompt: "consent",
+        },
+      },
+    });
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setDriveFiles([]);
+    setSelectedDriveFile(null);
+    setExtractedData(null);
+    setFile(null);
+  };
+
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
   const loadLibraries = useCallback(async () => {
     if (!(window as any).Tesseract) {
       const script = document.createElement("script");
       script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
       document.head.appendChild(script);
+<<<<<<< HEAD
       await new Promise<void>((resolve, reject) => {
         script.onload = () => resolve();
         script.onerror = () => reject(new Error("Failed to load Tesseract.js"));
         setTimeout(() => reject(new Error("Tesseract.js load timeout")), 15000);
+=======
+      await new Promise((resolve, reject) => {
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("Failed to load Tesseract.js"));
+        setTimeout(() => reject(new Error("Tesseract.js load timeout")), 10000);
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
       });
     }
 
@@ -211,6 +275,7 @@ export default function UploadInvoice() {
       const script = document.createElement("script");
       script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
       document.head.appendChild(script);
+<<<<<<< HEAD
       await new Promise<void>((resolve, reject) => {
         script.onload = () => {
           (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -219,6 +284,16 @@ export default function UploadInvoice() {
         };
         script.onerror = () => reject(new Error("Failed to load PDF.js"));
         setTimeout(() => reject(new Error("PDF.js load timeout")), 15000);
+=======
+      await new Promise((resolve, reject) => {
+        script.onload = () => {
+          (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
+            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+          resolve(null);
+        };
+        script.onerror = () => reject(new Error("Failed to load PDF.js"));
+        setTimeout(() => reject(new Error("PDF.js load timeout")), 10000);
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
       });
     }
   }, []);
@@ -228,7 +303,6 @@ export default function UploadInvoice() {
     const arrayBuffer = await pdfFile.arrayBuffer();
     const pdfjsLib = (window as any).pdfjsLib;
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
     let fullText = "";
 
     if (!canvasRef.current) canvasRef.current = document.createElement("canvas");
@@ -236,7 +310,11 @@ export default function UploadInvoice() {
     const ctx = canvas.getContext("2d");
 
     for (let i = 1; i <= Math.min(pdf.numPages, 3); i++) {
+<<<<<<< HEAD
       setOcrProgress(10 + Math.round((i / Math.min(pdf.numPages, 3)) * 40));
+=======
+      setOcrProgress(10 + (i / pdf.numPages) * 40);
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
       const pageText = textContent.items.map((item: any) => item.str).join(" ");
@@ -294,6 +372,7 @@ export default function UploadInvoice() {
     });
   }, []);
 
+<<<<<<< HEAD
   // ---------------------------
   // Edge: process-invoice
   // ---------------------------
@@ -302,10 +381,19 @@ export default function UploadInvoice() {
       body: {
         fileName: f.name,
         fileType: f.type,
+=======
+  // ✅ Uses your Edge Function: process-invoice
+  const extractWithAI = async (text: string) => {
+    const { data, error } = await supabase.functions.invoke("process-invoice", {
+      body: {
+        fileName: file?.name ?? "unknown",
+        fileType: file?.type ?? "application/octet-stream",
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
         extractedText: text,
       },
     });
 
+<<<<<<< HEAD
     if (error) throw error;
 
     // Expecting shape: { vendor_name, invoice_number, invoice_date, total_amount, tax_amount, currency }
@@ -322,6 +410,63 @@ export default function UploadInvoice() {
   // ---------------------------
   // File Upload -> OCR -> AI -> Review
   // ---------------------------
+=======
+    if (error) throw new Error(error.message || "AI extraction failed");
+    return data as ExtractedData;
+  };
+
+  // ✅ Drive list via Edge Function drive-list
+  const fetchDriveFiles = async () => {
+    try {
+      if (!providerToken) {
+        alert("Provider token missing. Logout and login again and accept Drive permission.");
+        return;
+      }
+
+      setUploading(true);
+
+      const { data, error } = await supabase.functions.invoke("drive-list", {
+        body: { providerToken },
+      });
+
+      if (error) throw new Error(error.message);
+
+      // drive-list returns JSON with { files: [...] }
+      const files = data?.files ?? [];
+      setDriveFiles(files);
+
+      if (!files.length) {
+        alert("No PDF or image files found in your Drive.");
+      }
+    } catch (e: any) {
+      alert(`Drive error: ${e.message}`);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // ✅ Drive download via Edge Function drive-download
+  const downloadDriveFileAsFile = async (fileId: string, name: string, mimeType: string) => {
+    if (!providerToken) throw new Error("Provider token missing");
+
+    const { data, error } = await supabase.functions.invoke("drive-download", {
+      body: { providerToken, fileId },
+    });
+
+    if (error) throw new Error(error.message);
+
+    const base64 = data?.base64;
+    if (!base64) throw new Error("Download failed: missing base64");
+
+    const byteString = atob(base64);
+    const bytes = new Uint8Array(byteString.length);
+    for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
+
+    const blob = new Blob([bytes], { type: mimeType });
+    return new File([blob], name, { type: mimeType });
+  };
+
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
   const processInvoice = async () => {
     if (!file) return;
 
@@ -332,7 +477,11 @@ export default function UploadInvoice() {
     setProcessingSteps([
       { step: "Uploading file...", status: "complete" },
       { step: "Running OCR extraction...", status: "processing" },
+<<<<<<< HEAD
       { step: "Extracting with AI (Edge Function)...", status: "pending" },
+=======
+      { step: "Extracting with AI...", status: "pending" },
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
       { step: "Validating data...", status: "pending" },
     ]);
 
@@ -344,14 +493,17 @@ export default function UploadInvoice() {
       else text = await performOCR(file);
 
       setExtractedText(text);
-
       setProcessingSteps((prev) =>
         prev.map((s, i) =>
           i === 1 ? { ...s, status: "complete" } : i === 2 ? { ...s, status: "processing" } : s
         )
       );
 
+<<<<<<< HEAD
       const aiData = await extractWithEdge(text, file);
+=======
+      const aiExtracted = await extractWithAI(text);
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
 
       setProcessingSteps((prev) =>
         prev.map((s, i) =>
@@ -359,6 +511,7 @@ export default function UploadInvoice() {
         )
       );
 
+<<<<<<< HEAD
       await new Promise((r) => setTimeout(r, 300));
       setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: "complete" })));
 
@@ -378,12 +531,22 @@ export default function UploadInvoice() {
         title: "Processing failed",
         description: corsSafeError(e),
       });
+=======
+      setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: "complete" })));
+      setExtractedData(aiExtracted);
+      alert("Invoice processed successfully!");
+    } catch (e: any) {
+      console.error(e);
+      setProcessingSteps((prev) => prev.map((s) => (s.status === "processing" ? { ...s, status: "error" } : s)));
+      alert(`Processing failed: ${e.message}`);
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
     } finally {
       setUploading(false);
       setProcessing(false);
     }
   };
 
+<<<<<<< HEAD
   // ---------------------------
   // Google Drive (Edge Functions)
   // ---------------------------
@@ -486,17 +649,46 @@ export default function UploadInvoice() {
         prev.map((s, i) =>
           i === 0 ? { ...s, status: "complete" } : i === 1 ? { ...s, status: "processing" } : s
         )
+=======
+  const processSelectedDriveFile = async () => {
+    if (!selectedDriveFile) return;
+
+    setUploading(true);
+    setProcessing(true);
+    setProcessingSteps([
+      { step: "Downloading from Google Drive...", status: "processing" },
+      { step: "Running OCR extraction...", status: "pending" },
+      { step: "Extracting with AI...", status: "pending" },
+      { step: "Validating data...", status: "pending" },
+    ]);
+
+    try {
+      const meta = driveFiles.find((f) => f.id === selectedDriveFile);
+      if (!meta) throw new Error("Missing Drive file metadata");
+
+      const downloaded = await downloadDriveFileAsFile(meta.id, meta.name, meta.mimeType);
+      setFile(downloaded);
+
+      setProcessingSteps((prev) =>
+        prev.map((s, i) => (i === 0 ? { ...s, status: "complete" } : i === 1 ? { ...s, status: "processing" } : s))
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
       );
 
       await loadLibraries();
 
       let text = "";
+<<<<<<< HEAD
       if (downloadedFile.type === "application/pdf") text = await extractTextFromPDF(downloadedFile);
       else text = await performOCR(downloadedFile);
+=======
+      if (downloaded.type === "application/pdf") text = await extractTextFromPDF(downloaded);
+      else text = await performOCR(downloaded);
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
 
       setExtractedText(text);
 
       setProcessingSteps((prev) =>
+<<<<<<< HEAD
         prev.map((s, i) =>
           i === 1 ? { ...s, status: "complete" } : i === 2 ? { ...s, status: "processing" } : s
         )
@@ -529,12 +721,30 @@ export default function UploadInvoice() {
         title: "Drive error",
         description: corsSafeError(e),
       });
+=======
+        prev.map((s, i) => (i === 1 ? { ...s, status: "complete" } : i === 2 ? { ...s, status: "processing" } : s))
+      );
+
+      const aiExtracted = await extractWithAI(text);
+
+      setProcessingSteps((prev) =>
+        prev.map((s, i) => (i === 2 ? { ...s, status: "complete" } : i === 3 ? { ...s, status: "processing" } : s))
+      );
+
+      setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: "complete" })));
+      setExtractedData(aiExtracted);
+      alert("Invoice processed from Google Drive!");
+    } catch (e: any) {
+      alert(`Drive error: ${e.message}`);
+      setProcessingSteps((prev) => prev.map((s) => (s.status === "processing" ? { ...s, status: "error" } : s)));
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
     } finally {
       setUploading(false);
       setProcessing(false);
     }
   };
 
+<<<<<<< HEAD
   // ---------------------------
   // Save invoice (Storage + DB)
   // ---------------------------
@@ -571,11 +781,41 @@ export default function UploadInvoice() {
         file_name: file.name,
         file_type: file.type || "application/octet-stream", // ✅ FIX for NOT NULL
         file_path: path, // store storage path
+=======
+  // ✅ Save invoice to Supabase Storage + invoices table (fix file_type NOT NULL)
+  const saveInvoice = async () => {
+    if (!extractedData || !file) return;
+
+    try {
+      setUploading(true);
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const userId = sessionData.session?.user?.id;
+      if (!userId) throw new Error("Not logged in");
+
+      // 1) Upload file to Storage
+      const ext = file.name.split(".").pop() || "bin";
+      const storagePath = `${userId}/${crypto.randomUUID()}.${ext}`;
+
+      const { error: upErr } = await supabase.storage.from("invoices").upload(storagePath, file, {
+        contentType: file.type,
+        upsert: false,
+      });
+      if (upErr) throw upErr;
+
+      // 2) Insert DB row with required fields
+      const { error: dbErr } = await supabase.from("invoices").insert({
+        user_id: userId,
+        file_name: file.name,
+        file_path: storagePath,
+        file_type: file.type, // ✅ FIX not-null
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
         vendor_name: extractedData.vendor_name || null,
         invoice_number: extractedData.invoice_number || null,
         invoice_date: extractedData.invoice_date || null,
         total_amount: extractedData.total_amount ? Number(extractedData.total_amount) : null,
         tax_amount: extractedData.tax_amount ? Number(extractedData.tax_amount) : null,
+<<<<<<< HEAD
         currency: extractedData.currency || "EUR",
         extracted_text: extractedText || null,
       };
@@ -596,6 +836,17 @@ export default function UploadInvoice() {
         title: "Save failed",
         description: corsSafeError(e),
       });
+=======
+        currency: extractedData.currency || "USD",
+      });
+
+      if (dbErr) throw dbErr;
+
+      alert("Invoice saved successfully!");
+      resetForm();
+    } catch (e: any) {
+      alert(`Save failed: ${e.message}`);
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
     } finally {
       setUploading(false);
     }
@@ -614,9 +865,12 @@ export default function UploadInvoice() {
     setOcrProgress(0);
   };
 
+<<<<<<< HEAD
   // ---------------------------
   // UI
   // ---------------------------
+=======
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
       <div className="max-w-3xl mx-auto space-y-8">
@@ -626,22 +880,28 @@ export default function UploadInvoice() {
             <p className="text-gray-600 mt-1">Upload invoices via file, Google Drive, or email</p>
           </div>
 
-          {isAuthenticated ? (
+          {isAuthenticated && (
             <div className="flex items-center gap-3">
               <div className="text-right">
                 <p className="text-xs text-gray-500">Logged in as</p>
-                <p className="text-sm font-medium">{userEmail}</p>
+                <p className="text-sm font-medium">{sessionUserEmail}</p>
+                <p className="text-xs text-gray-500">
+                  Provider token: {providerToken ? "✅ available" : "❌ missing"}
+                </p>
               </div>
               <Button variant="outline" size="sm" onClick={handleSignOut}>
                 <X className="h-4 w-4 mr-2" />
                 Logout
               </Button>
             </div>
+<<<<<<< HEAD
           ) : (
             <Button onClick={handleGoogleSignIn} className="bg-blue-600 hover:bg-blue-700">
               <LogIn className="h-4 w-4 mr-2" />
               Sign in with Google
             </Button>
+=======
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
           )}
         </div>
 
@@ -704,13 +964,7 @@ export default function UploadInvoice() {
                         <p className="font-medium">Drop your invoice here</p>
                         <p className="text-sm text-gray-600">or click to browse • PDF, JPG, PNG up to 10MB</p>
                       </div>
-                      <input
-                        type="file"
-                        accept=".pdf,.jpg,.jpeg,.png"
-                        onChange={handleFileSelect}
-                        className="hidden"
-                        id="file-upload"
-                      />
+                      <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleFileSelect} className="hidden" id="file-upload" />
                       <Button asChild variant="outline">
                         <label htmlFor="file-upload" className="cursor-pointer">
                           Select File
@@ -764,15 +1018,23 @@ export default function UploadInvoice() {
                       <LogIn className="h-4 w-4 mr-2" />
                       Sign in with Google
                     </Button>
+<<<<<<< HEAD
                     <p className="text-xs text-gray-500 mt-4">
                       Accept Drive permission when Google asks.
                     </p>
+=======
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
                   </div>
                 ) : (
                   <>
                     <Alert>
                       <AlertDescription>
+<<<<<<< HEAD
                         Logged in as: <strong>{userEmail}</strong>
+=======
+                        Logged in as: <strong>{sessionUserEmail}</strong>
+                        <div className="text-xs mt-1">Provider token: {providerToken ? "✅ available" : "❌ missing"}</div>
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
                       </AlertDescription>
                     </Alert>
 
@@ -795,7 +1057,6 @@ export default function UploadInvoice() {
                             </>
                           )}
                         </Button>
-                        <p className="text-xs text-gray-500 mt-3">Loads PDF and image files from Drive</p>
                       </div>
                     ) : (
                       <div className="space-y-3">
@@ -812,7 +1073,7 @@ export default function UploadInvoice() {
                             <div
                               key={f.id}
                               onClick={() => setSelectedDriveFile(f.id)}
-                              className={`p-3 border-b cursor-pointer hover:bg-gray-50 transition-colors ${
+                              className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${
                                 selectedDriveFile === f.id ? "bg-blue-50 border-blue-300" : ""
                               }`}
                             >
@@ -829,19 +1090,13 @@ export default function UploadInvoice() {
                                     {f.size ? `${(Number(f.size) / 1024).toFixed(0)} KB` : ""}
                                   </p>
                                 </div>
-                                {selectedDriveFile === f.id && (
-                                  <CheckCircle2 className="h-5 w-5 text-blue-600 flex-shrink-0" />
-                                )}
+                                {selectedDriveFile === f.id && <CheckCircle2 className="h-5 w-5 text-blue-600" />}
                               </div>
                             </div>
                           ))}
                         </div>
 
-                        <Button
-                          className="w-full bg-blue-600 hover:bg-blue-700"
-                          onClick={processSelectedDriveFile}
-                          disabled={!selectedDriveFile || uploading || processing}
-                        >
+                        <Button className="w-full bg-blue-600 hover:bg-blue-700" onClick={processSelectedDriveFile} disabled={!selectedDriveFile || uploading || processing}>
                           {uploading || processing ? (
                             <>
                               <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -886,7 +1141,7 @@ export default function UploadInvoice() {
                   <div className="space-y-4">
                     <Alert>
                       <AlertDescription>
-                        Connected to: <strong>{userEmail}</strong>
+                        Connected to: <strong>{sessionUserEmail}</strong>
                       </AlertDescription>
                     </Alert>
                     <div className="text-center py-8 text-gray-500">
@@ -901,12 +1156,16 @@ export default function UploadInvoice() {
           </TabsContent>
         </Tabs>
 
+<<<<<<< HEAD
         {/* ---------------- PROCESSING STEPS ---------------- */}
+=======
+        {/* Processing Steps */}
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
         {processingSteps.length > 0 && !extractedData && (
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">AI Processing</CardTitle>
-              <CardDescription>Multi-step workflow in progress</CardDescription>
+              <CardDescription>Multi-agent workflow in progress</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {processingSteps.map((step, i) => (
@@ -915,6 +1174,7 @@ export default function UploadInvoice() {
                   {step.status === "processing" && <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />}
                   {step.status === "complete" && <CheckCircle2 className="h-5 w-5 text-green-600" />}
                   {step.status === "error" && <AlertCircle className="h-5 w-5 text-red-600" />}
+<<<<<<< HEAD
                   <span
                     className={`text-sm ${
                       step.status === "pending"
@@ -928,9 +1188,11 @@ export default function UploadInvoice() {
                   >
                     {step.step}
                   </span>
+=======
+                  <span className="text-sm">{step.step}</span>
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
                 </div>
               ))}
-
               {ocrProgress > 0 && ocrProgress < 100 && (
                 <div className="mt-4">
                   <div className="flex justify-between text-xs text-gray-600 mb-1">
@@ -938,7 +1200,7 @@ export default function UploadInvoice() {
                     <span>{ocrProgress}%</span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div className="bg-blue-600 h-2 rounded-full transition-all duration-300" style={{ width: `${ocrProgress}%` }} />
+                    <div className="bg-blue-600 h-2 rounded-full transition-all" style={{ width: `${ocrProgress}%` }} />
                   </div>
                 </div>
               )}
@@ -946,35 +1208,48 @@ export default function UploadInvoice() {
           </Card>
         )}
 
+<<<<<<< HEAD
         {/* ---------------- REVIEW + SAVE ---------------- */}
+=======
+        {/* Review + Save */}
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
         {extractedData && (
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Review Extracted Data</CardTitle>
-              <CardDescription>Verify and correct extracted information before saving</CardDescription>
+              <CardDescription>Verify and correct the extracted information before saving</CardDescription>
             </CardHeader>
 
             <CardContent className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
+<<<<<<< HEAD
                   <Label htmlFor="vendor_name">Vendor Name</Label>
                   <Input
                     id="vendor_name"
                     value={extractedData.vendor_name}
                     onChange={(e) => handleInputChange("vendor_name", e.target.value)}
                   />
+=======
+                  <Label>Vendor Name</Label>
+                  <Input value={extractedData.vendor_name} onChange={(e) => handleInputChange("vendor_name", e.target.value)} />
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
                 </div>
-
                 <div className="space-y-2">
+<<<<<<< HEAD
                   <Label htmlFor="invoice_number">Invoice Number</Label>
                   <Input
                     id="invoice_number"
                     value={extractedData.invoice_number}
                     onChange={(e) => handleInputChange("invoice_number", e.target.value)}
                   />
+=======
+                  <Label>Invoice Number</Label>
+                  <Input value={extractedData.invoice_number} onChange={(e) => handleInputChange("invoice_number", e.target.value)} />
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
                 </div>
-
                 <div className="space-y-2">
+<<<<<<< HEAD
                   <Label htmlFor="invoice_date">Invoice Date</Label>
                   <Input
                     id="invoice_date"
@@ -982,18 +1257,26 @@ export default function UploadInvoice() {
                     value={extractedData.invoice_date}
                     onChange={(e) => handleInputChange("invoice_date", e.target.value)}
                   />
+=======
+                  <Label>Invoice Date</Label>
+                  <Input type="date" value={extractedData.invoice_date} onChange={(e) => handleInputChange("invoice_date", e.target.value)} />
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
                 </div>
-
                 <div className="space-y-2">
+<<<<<<< HEAD
                   <Label htmlFor="currency">Currency</Label>
                   <Input
                     id="currency"
                     value={extractedData.currency}
                     onChange={(e) => handleInputChange("currency", e.target.value)}
                   />
+=======
+                  <Label>Currency</Label>
+                  <Input value={extractedData.currency} onChange={(e) => handleInputChange("currency", e.target.value)} />
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
                 </div>
-
                 <div className="space-y-2">
+<<<<<<< HEAD
                   <Label htmlFor="total_amount">Total Amount</Label>
                   <Input
                     id="total_amount"
@@ -1002,9 +1285,13 @@ export default function UploadInvoice() {
                     value={extractedData.total_amount}
                     onChange={(e) => handleInputChange("total_amount", e.target.value)}
                   />
+=======
+                  <Label>Total Amount</Label>
+                  <Input type="number" step="0.01" value={extractedData.total_amount} onChange={(e) => handleInputChange("total_amount", e.target.value)} />
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
                 </div>
-
                 <div className="space-y-2">
+<<<<<<< HEAD
                   <Label htmlFor="tax_amount">Tax/VAT Amount</Label>
                   <Input
                     id="tax_amount"
@@ -1037,6 +1324,16 @@ export default function UploadInvoice() {
                   onClick={saveInvoice}
                   disabled={uploading}
                 >
+=======
+                  <Label>Tax/VAT Amount</Label>
+                  <Input type="number" step="0.01" value={extractedData.tax_amount} onChange={(e) => handleInputChange("tax_amount", e.target.value)} />
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <Button variant="outline" onClick={resetForm}>Cancel</Button>
+                <Button className="flex-1 bg-blue-600 hover:bg-blue-700" onClick={saveInvoice} disabled={uploading}>
+>>>>>>> 6e738f6e99f67e3ca8d5ffda0363e34369d12817
                   {uploading ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin mr-2" />
