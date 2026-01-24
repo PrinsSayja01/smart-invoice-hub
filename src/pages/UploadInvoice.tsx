@@ -35,7 +35,6 @@ export default function UploadInvoice() {
 
   useEffect(() => {
     const checkAuth = async () => {
-      // Prefer real Supabase session
       const { data } = await supabase.auth.getSession();
       if (data?.session) {
         setSession(data.session);
@@ -43,7 +42,7 @@ export default function UploadInvoice() {
         return;
       }
 
-      // fallback legacy (your old localStorage method)
+      // fallback legacy
       const token = localStorage.getItem("auth_token");
       const userSession = localStorage.getItem("user_session");
       if (token && userSession) {
@@ -116,7 +115,6 @@ export default function UploadInvoice() {
   };
 
   const handleGoogleSignIn = async () => {
-    // Use Supabase JS auth instead of hardcoded URL
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
@@ -134,17 +132,34 @@ export default function UploadInvoice() {
       localStorage.removeItem("auth_token");
       localStorage.removeItem("user_session");
       localStorage.removeItem("supabase_session");
+
       setSession(null);
       setAuthToken(null);
       setDriveFiles([]);
       setSelectedDriveFile(null);
       setExtractedData(null);
+
       window.dispatchEvent(new Event("auth-change"));
     } catch (error: any) {
       console.error("Sign out error:", error);
     }
   };
 
+  // ✅ Safe JSON parser for API responses
+  const safeReadJson = async (response: Response) => {
+    const raw = await response.text();
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new Error(
+        `API did not return JSON (Status ${response.status}). ` +
+          `This usually means the /api route is missing on Vercel.\n\n` +
+          `First 120 chars:\n${raw.slice(0, 120)}`
+      );
+    }
+  };
+
+  // ✅ FIXED: Drive list files now shows real error instead of Unexpected token '<'
   const fetchDriveFiles = async () => {
     if (!accessToken) {
       alert("Please log in to access Google Drive");
@@ -155,24 +170,25 @@ export default function UploadInvoice() {
       setUploading(true);
 
       const response = await fetch("/api/drive/list-files", {
-  headers: { Authorization: `Bearer ${accessToken}` },
-});
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
 
-    const raw = await response.text();
+      const data = await safeReadJson(response);
 
-    let data: any;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error(`API did not return JSON. Status ${response.status}. First 120 chars: ${raw.slice(0, 120)}`);
-    }
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to fetch files");
+      }
 
-    if (!response.ok) {
-    throw new Error(data.error || "Failed to fetch files");
-    }
+      setDriveFiles(data.files || []);
 
-     setDriveFiles(data.files || []);
-
+      if (data.files?.length === 0) {
+        alert("No PDF or image files found in your Google Drive.");
+      }
+    } catch (error: any) {
+      console.error("Drive fetch error:", error);
+      alert(`Error fetching files: ${error.message}`);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -278,11 +294,8 @@ export default function UploadInvoice() {
     });
   }, []);
 
-  // ✅ No paid AI call here - you already have extractedData from OCR / user input.
-  // If you still want “AI extraction” later, we can connect a free provider.
+  // ✅ FREE local extraction (no paid API)
   const extractWithAI = async (text: string): Promise<ExtractedData> => {
-    // Basic fallback parser (FREE, no API)
-    // You can improve later.
     const vendorMatch = text.match(/Vendor[:\s]+(.+)/i);
     const totalMatch = text.match(/Total[:\s]+(\d+(\.\d+)?)/i);
     const taxMatch = text.match(/Tax[:\s]+(\d+(\.\d+)?)/i);
@@ -319,13 +332,17 @@ export default function UploadInvoice() {
       setExtractedText(text);
 
       setProcessingSteps((prev) =>
-        prev.map((s, i) => (i === 1 ? { ...s, status: "complete" } : i === 2 ? { ...s, status: "processing" } : s))
+        prev.map((s, i) =>
+          i === 1 ? { ...s, status: "complete" } : i === 2 ? { ...s, status: "processing" } : s
+        )
       );
 
       const aiExtractedData = await extractWithAI(text);
 
       setProcessingSteps((prev) =>
-        prev.map((s, i) => (i === 2 ? { ...s, status: "complete" } : i === 3 ? { ...s, status: "processing" } : s))
+        prev.map((s, i) =>
+          i === 2 ? { ...s, status: "complete" } : i === 3 ? { ...s, status: "processing" } : s
+        )
       );
 
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -335,9 +352,7 @@ export default function UploadInvoice() {
       alert("Invoice processed successfully!");
     } catch (error: any) {
       console.error("Error processing invoice:", error);
-      setProcessingSteps((prev) =>
-        prev.map((s) => (s.status === "processing" ? { ...s, status: "error" } : s))
-      );
+      setProcessingSteps((prev) => prev.map((s) => (s.status === "processing" ? { ...s, status: "error" } : s)));
       alert(`Processing failed: ${error.message}`);
     } finally {
       setUploading(false);
@@ -345,71 +360,6 @@ export default function UploadInvoice() {
     }
   };
 
-  const processSelectedDriveFile = async () => {
-    if (!selectedDriveFile || !accessToken) return;
-
-    setUploading(true);
-    setProcessing(true);
-    setProcessingSteps([
-      { step: "Downloading from Google Drive...", status: "processing" },
-      { step: "Running OCR extraction...", status: "pending" },
-      { step: "Extracting invoice data...", status: "pending" },
-      { step: "Validating data...", status: "pending" },
-    ]);
-
-    try {
-      const fileMetadata = driveFiles.find((f) => f.id === selectedDriveFile);
-
-      const response = await fetch(`/api/drive/download-file?fileId=${selectedDriveFile}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-
-      if (!response.ok) throw new Error("Failed to download file from Google Drive");
-
-      const blob = await response.blob();
-      const downloadedFile = new File([blob], fileMetadata.name, { type: fileMetadata.mimeType });
-
-      setFile(downloadedFile);
-      setProcessingSteps((prev) =>
-        prev.map((s, i) => (i === 0 ? { ...s, status: "complete" } : i === 1 ? { ...s, status: "processing" } : s))
-      );
-
-      await loadLibraries();
-
-      let text = "";
-      if (downloadedFile.type === "application/pdf") text = await extractTextFromPDF(downloadedFile);
-      else text = await performOCR(downloadedFile);
-
-      setExtractedText(text);
-
-      setProcessingSteps((prev) =>
-        prev.map((s, i) => (i === 1 ? { ...s, status: "complete" } : i === 2 ? { ...s, status: "processing" } : s))
-      );
-
-      const aiExtractedData = await extractWithAI(text);
-
-      setProcessingSteps((prev) =>
-        prev.map((s, i) => (i === 2 ? { ...s, status: "complete" } : i === 3 ? { ...s, status: "processing" } : s))
-      );
-
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      setProcessingSteps((prev) => prev.map((s) => ({ ...s, status: "complete" })));
-
-      setExtractedData(aiExtractedData);
-      alert("Invoice processed successfully from Google Drive!");
-    } catch (error: any) {
-      console.error("Processing error:", error);
-      setProcessingSteps((prev) =>
-        prev.map((s) => (s.status === "processing" ? { ...s, status: "error" } : s))
-      );
-      alert(`Error: ${error.message}`);
-    } finally {
-      setUploading(false);
-      setProcessing(false);
-    }
-  };
-
-  // ✅ FIXED: now actually uploads to storage + inserts to invoices table
   const saveInvoice = async () => {
     try {
       if (!extractedData) return;
@@ -421,7 +371,6 @@ export default function UploadInvoice() {
 
       setUploading(true);
 
-      // 1) Upload file to Storage bucket "invoices"
       const fileExt = file.name.split(".").pop() || "pdf";
       const filePath = `${user.id}/${Date.now()}-${crypto.randomUUID()}.${fileExt}`;
 
@@ -431,41 +380,27 @@ export default function UploadInvoice() {
       });
       if (uploadErr) throw uploadErr;
 
-      // 2) Public URL (bucket must be public)
       const { data: publicData } = supabase.storage.from("invoices").getPublicUrl(filePath);
       const fileUrl = publicData.publicUrl;
 
-      // 3) Insert row in invoices table
       const payload: any = {
         user_id: user.id,
         file_name: file.name,
         file_url: fileUrl,
-        file_type: file.type, // ✅ REQUIRED (your error fix)
-        file_size: file.size, // optional (if column exists)
-
+        file_type: file.type, // ✅ FIX
         vendor_name: extractedData.vendor_name || null,
         invoice_number: extractedData.invoice_number || null,
         invoice_date: extractedData.invoice_date || null,
-
         total_amount: extractedData.total_amount ? Number(extractedData.total_amount) : null,
         tax_amount: extractedData.tax_amount ? Number(extractedData.tax_amount) : null,
         currency: extractedData.currency || "EUR",
-
-        invoice_type: null,
         risk_score: "low",
         compliance_status: "needs_review",
         is_flagged: false,
         flag_reason: null,
       };
 
-      // If your invoices table does NOT have file_size, this prevents errors:
-      // remove it automatically if insert fails due to unknown column
-      let insert = await supabase.from("invoices").insert(payload);
-      if (insert.error && insert.error.message?.includes("file_size")) {
-        delete payload.file_size;
-        insert = await supabase.from("invoices").insert(payload);
-      }
-
+      const insert = await supabase.from("invoices").insert(payload);
       if (insert.error) throw insert.error;
 
       alert("Invoice saved to Supabase successfully!");
@@ -610,7 +545,7 @@ export default function UploadInvoice() {
             </Card>
           </TabsContent>
 
-          {/* DRIVE */}
+          {/* DRIVE TAB */}
           <TabsContent value="drive">
             <Card>
               <CardHeader>
@@ -629,9 +564,6 @@ export default function UploadInvoice() {
                       <LogIn className="h-4 w-4 mr-2" />
                       Sign in with Google
                     </Button>
-                    <p className="text-xs text-gray-500 mt-4">
-                      You will be able to browse and select invoice files from your Google Drive
-                    </p>
                   </div>
                 ) : (
                   <>
@@ -656,7 +588,6 @@ export default function UploadInvoice() {
                             </>
                           )}
                         </Button>
-                        <p className="text-xs text-gray-500 mt-3">Click to load your PDF and image files from Google Drive</p>
                       </div>
                     ) : (
                       <div className="space-y-3">
@@ -699,20 +630,9 @@ export default function UploadInvoice() {
 
                         <Button
                           className="w-full bg-blue-600 hover:bg-blue-700"
-                          onClick={processSelectedDriveFile}
-                          disabled={!selectedDriveFile || uploading || processing}
+                          onClick={() => alert("Download endpoint missing. Create /api/drive/download-file or use Edge Function.")}
                         >
-                          {uploading || processing ? (
-                            <>
-                              <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                              Processing...
-                            </>
-                          ) : (
-                            <>
-                              <Upload className="h-4 w-4 mr-2" />
-                              Process Selected File
-                            </>
-                          )}
+                          Process Selected File
                         </Button>
                       </div>
                     )}
@@ -743,18 +663,9 @@ export default function UploadInvoice() {
                     </Button>
                   </div>
                 ) : (
-                  <div className="space-y-4">
-                    <Alert>
-                      <AlertDescription>
-                        Connected to: <strong>{userEmail}</strong>
-                      </AlertDescription>
-                    </Alert>
-
-                    <div className="text-center py-8 text-gray-500">
-                      <Mail className="h-12 w-12 mx-auto mb-4 text-gray-400" />
-                      <p className="text-sm mb-2">Gmail integration coming soon!</p>
-                      <p className="text-xs text-blue-600">Auto-scan inbox for invoice attachments</p>
-                    </div>
+                  <div className="text-center py-8 text-gray-500">
+                    <Mail className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+                    <p className="text-sm mb-2">Gmail integration coming soon!</p>
                   </div>
                 )}
               </CardContent>
@@ -762,53 +673,7 @@ export default function UploadInvoice() {
           </TabsContent>
         </Tabs>
 
-        {processingSteps.length > 0 && !extractedData && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">AI Processing</CardTitle>
-              <CardDescription>Workflow in progress</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {processingSteps.map((step, i) => (
-                <div key={i} className="flex items-center gap-3">
-                  {step.status === "pending" && <div className="h-5 w-5 rounded-full border-2 border-gray-300" />}
-                  {step.status === "processing" && <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />}
-                  {step.status === "complete" && <CheckCircle2 className="h-5 w-5 text-green-600" />}
-                  {step.status === "error" && <AlertCircle className="h-5 w-5 text-red-600" />}
-                  <span
-                    className={`text-sm ${
-                      step.status === "pending"
-                        ? "text-gray-500"
-                        : step.status === "processing"
-                        ? "text-gray-900 font-medium"
-                        : step.status === "complete"
-                        ? "text-green-600"
-                        : "text-red-600"
-                    }`}
-                  >
-                    {step.step}
-                  </span>
-                </div>
-              ))}
-
-              {ocrProgress > 0 && ocrProgress < 100 && (
-                <div className="mt-4">
-                  <div className="flex justify-between text-xs text-gray-600 mb-1">
-                    <span>OCR Progress</span>
-                    <span>{ocrProgress}%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${ocrProgress}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
+        {/* SAVE SECTION */}
         {extractedData && (
           <Card>
             <CardHeader>
@@ -822,7 +687,7 @@ export default function UploadInvoice() {
                   <Input
                     id="vendor_name"
                     value={extractedData.vendor_name}
-                    onChange={(e) => handleInputChange("vendor_name", e.target.value)}
+                    onChange={(e) => setExtractedData({ ...extractedData, vendor_name: e.target.value })}
                   />
                 </div>
                 <div className="space-y-2">
@@ -830,7 +695,7 @@ export default function UploadInvoice() {
                   <Input
                     id="invoice_number"
                     value={extractedData.invoice_number}
-                    onChange={(e) => handleInputChange("invoice_number", e.target.value)}
+                    onChange={(e) => setExtractedData({ ...extractedData, invoice_number: e.target.value })}
                   />
                 </div>
                 <div className="space-y-2">
@@ -839,7 +704,7 @@ export default function UploadInvoice() {
                     id="invoice_date"
                     type="date"
                     value={extractedData.invoice_date}
-                    onChange={(e) => handleInputChange("invoice_date", e.target.value)}
+                    onChange={(e) => setExtractedData({ ...extractedData, invoice_date: e.target.value })}
                   />
                 </div>
                 <div className="space-y-2">
@@ -847,7 +712,7 @@ export default function UploadInvoice() {
                   <Input
                     id="currency"
                     value={extractedData.currency}
-                    onChange={(e) => handleInputChange("currency", e.target.value)}
+                    onChange={(e) => setExtractedData({ ...extractedData, currency: e.target.value })}
                   />
                 </div>
                 <div className="space-y-2">
@@ -855,33 +720,20 @@ export default function UploadInvoice() {
                   <Input
                     id="total_amount"
                     type="number"
-                    step="0.01"
                     value={extractedData.total_amount}
-                    onChange={(e) => handleInputChange("total_amount", e.target.value)}
+                    onChange={(e) => setExtractedData({ ...extractedData, total_amount: e.target.value })}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="tax_amount">Tax/VAT Amount</Label>
+                  <Label htmlFor="tax_amount">Tax Amount</Label>
                   <Input
                     id="tax_amount"
                     type="number"
-                    step="0.01"
                     value={extractedData.tax_amount}
-                    onChange={(e) => handleInputChange("tax_amount", e.target.value)}
+                    onChange={(e) => setExtractedData({ ...extractedData, tax_amount: e.target.value })}
                   />
                 </div>
               </div>
-
-              {extractedText && (
-                <details className="mt-4">
-                  <summary className="text-sm font-semibold text-gray-700 cursor-pointer hover:text-blue-600">
-                    View extracted text ({extractedText.length} characters)
-                  </summary>
-                  <pre className="mt-3 p-4 bg-gray-50 rounded-lg text-xs overflow-auto max-h-48 border-2 border-gray-200">
-                    {extractedText}
-                  </pre>
-                </details>
-              )}
 
               <div className="flex gap-3 pt-4">
                 <Button variant="outline" onClick={resetForm}>
