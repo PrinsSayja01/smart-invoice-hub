@@ -233,6 +233,7 @@ export default function Invoices() {
                         <TableCell>{getRiskBadge(invoice.risk_score)}</TableCell>
                         <TableCell>{getComplianceBadge(invoice.compliance_status)}</TableCell>
                         <TableCell>
+<<<<<<< HEAD
                         <div className="flex items-center justify-end gap-2">
   <Button
     variant="ghost"
@@ -267,15 +268,8 @@ export default function Invoices() {
   </Button>
 </div>
 
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+
+                          
 
         {/* Invoice Detail Dialog */}
         <Dialog open={!!selectedInvoice} onOpenChange={() => setSelectedInvoice(null)}>
