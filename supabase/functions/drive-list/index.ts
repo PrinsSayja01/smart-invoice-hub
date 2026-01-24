@@ -10,19 +10,21 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { providerToken } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const providerToken = body?.providerToken;
 
-    if (!providerToken) {
-      return new Response(JSON.stringify({ error: "Missing providerToken" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (!providerToken || typeof providerToken !== "string") {
+      return new Response(
+        JSON.stringify({ error: "Missing providerToken. Logout & login again and accept Drive permission." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     const q = encodeURIComponent(`trashed=false and (mimeType='application/pdf' or mimeType contains 'image/')`);
     const url =
-      `https://www.googleapis.com/drive/v3/files` +
-      `?q=${q}&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=50&orderBy=modifiedTime desc`;
+      `https://www.googleapis.com/drive/v3/files?q=${q}` +
+      `&fields=files(id,name,mimeType,size,modifiedTime)` +
+      `&pageSize=50`;
 
     const r = await fetch(url, {
       headers: { Authorization: `Bearer ${providerToken}` },
@@ -31,13 +33,26 @@ serve(async (req) => {
     const txt = await r.text();
 
     if (!r.ok) {
-      return new Response(JSON.stringify({ error: "Google Drive API failed", status: r.status, details: txt }), {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      // Return Google error clearly
+      return new Response(
+        JSON.stringify({
+          error: "Google Drive API failed",
+          google_status: r.status,
+          google_response: txt,
+          hint:
+            r.status === 401
+              ? "Token expired/invalid → Logout and login again"
+              : r.status === 403
+              ? "Missing Drive scope → Login again and accept Drive permission"
+              : "Check google_response for details",
+        }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    return new Response(txt, {
+    // Google returns JSON string. Return parsed object consistently.
+    const json = JSON.parse(txt);
+    return new Response(JSON.stringify({ files: json.files || [] }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
