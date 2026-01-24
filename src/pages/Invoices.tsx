@@ -291,7 +291,7 @@ export default function Invoices() {
                               variant="ghost"
                               size="icon"
                               onClick={() => handleDelete(invoice.id)}
-                              disabled={deleting === invoice.id}
+                              dgit push origin mainisabled={deleting === invoice.id}
                               title="Delete"
                             >
                               {deleting === invoice.id ? (
