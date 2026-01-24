@@ -8,7 +8,6 @@ const corsHeaders = {
 };
 
 type ReqBody = {
-  fileUrl?: string;
   fileName?: string;
   fileType?: string;
   extractedText?: string;
@@ -22,10 +21,6 @@ function normalizeText(t: string) {
     .trim();
 }
 
-function pickFirst<T>(arr: T[]): T | null {
-  return arr.length ? arr[0] : null;
-}
-
 function guessCurrency(text: string): string {
   const t = text.toUpperCase();
   if (t.includes("EUR") || t.includes("€")) return "EUR";
@@ -35,14 +30,11 @@ function guessCurrency(text: string): string {
 }
 
 function parseDateToISO(raw: string): string | null {
-  // Supports: YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY, MM/DD/YYYY
   const s = raw.trim();
 
-  // YYYY-MM-DD
   const iso = s.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
-  // DD.MM.YYYY or DD/MM/YYYY
   const dmy = s.match(/\b(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\b/);
   if (dmy) {
     const dd = dmy[1].padStart(2, "0");
@@ -50,40 +42,26 @@ function parseDateToISO(raw: string): string | null {
     const yyyy = dmy[3];
     return `${yyyy}-${mm}-${dd}`;
   }
-
   return null;
 }
 
 function parseMoney(raw: string): number | null {
-  // Handles: 1,234.56  | 1.234,56 | 1234.56 | 1234,56
-  const s = raw
-    .replace(/[^\d.,-]/g, "")
-    .trim();
-
+  const s = raw.replace(/[^\d.,-]/g, "").trim();
   if (!s) return null;
 
-  // If it has both . and , decide decimal separator by last occurrence
   const lastDot = s.lastIndexOf(".");
   const lastComma = s.lastIndexOf(",");
 
   let normalized = s;
 
   if (lastDot !== -1 && lastComma !== -1) {
-    // Example: 1.234,56 (comma decimal) OR 1,234.56 (dot decimal)
-    if (lastComma > lastDot) {
-      // comma decimal: remove dots, replace comma with dot
-      normalized = s.replace(/\./g, "").replace(",", ".");
-    } else {
-      // dot decimal: remove commas
-      normalized = s.replace(/,/g, "");
-    }
+    if (lastComma > lastDot) normalized = s.replace(/\./g, "").replace(",", ".");
+    else normalized = s.replace(/,/g, "");
   } else if (lastComma !== -1) {
-    // Only comma present: treat comma as decimal if 2 digits after it
     const parts = s.split(",");
     if (parts[1]?.length === 2) normalized = s.replace(/\./g, "").replace(",", ".");
     else normalized = s.replace(/,/g, "");
   } else {
-    // Only dot or none: remove commas just in case
     normalized = s.replace(/,/g, "");
   }
 
@@ -106,7 +84,6 @@ function findInvoiceNumber(text: string): string | null {
 
 function findDate(text: string): string | null {
   const candidates: string[] = [];
-
   const labelPatterns = [
     /invoice\s*date\s*[:#]?\s*([0-9./-]{6,10})/i,
     /date\s*[:#]?\s*([0-9./-]{6,10})/i,
@@ -117,8 +94,9 @@ function findDate(text: string): string | null {
     if (m?.[1]) candidates.push(m[1]);
   }
 
-  // Fallback: any date-looking string
-  const anyDates = text.match(/\b(20\d{2}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}[./-]20\d{2})\b/g);
+  const anyDates = text.match(
+    /\b(20\d{2}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}[./-]20\d{2})\b/g
+  );
   if (anyDates) candidates.push(...anyDates);
 
   for (const c of candidates) {
@@ -129,9 +107,6 @@ function findDate(text: string): string | null {
 }
 
 function findTotals(text: string) {
-  // Try to find total and tax/vat
-  const t = text;
-
   const totalPatterns = [
     /\b(total|amount due|grand total|total due)\b\s*[:\-]?\s*([€$£]?\s*[\d.,]+)\b/i,
     /\b(gesamt|gesamtbetrag|summe)\b\s*[:\-]?\s*([€$£]?\s*[\d.,]+)\b/i,
@@ -146,7 +121,7 @@ function findTotals(text: string) {
   let tax_amount: number | null = null;
 
   for (const p of totalPatterns) {
-    const m = t.match(p);
+    const m = text.match(p);
     if (m?.[2]) {
       total_amount = parseMoney(m[2]);
       if (total_amount != null) break;
@@ -154,16 +129,15 @@ function findTotals(text: string) {
   }
 
   for (const p of taxPatterns) {
-    const m = t.match(p);
+    const m = text.match(p);
     if (m?.[2]) {
       tax_amount = parseMoney(m[2]);
       if (tax_amount != null) break;
     }
   }
 
-  // Fallback: pick largest money value as total
   if (total_amount == null) {
-    const moneyMatches = t.match(/[€$£]?\s*\d{1,3}([.,]\d{3})*([.,]\d{2})/g);
+    const moneyMatches = text.match(/[€$£]?\s*\d{1,3}([.,]\d{3})*([.,]\d{2})/g);
     if (moneyMatches?.length) {
       const nums = moneyMatches
         .map(parseMoney)
@@ -172,7 +146,6 @@ function findTotals(text: string) {
     }
   }
 
-  // If tax missing, guess 19% for EUR, 10% otherwise
   if (tax_amount == null && total_amount != null) {
     tax_amount = Math.round(total_amount * 0.19 * 100) / 100;
   }
@@ -181,18 +154,14 @@ function findTotals(text: string) {
 }
 
 function findVendor(text: string): string | null {
-  // Simple heuristic: take first non-empty line that looks like a company
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   const candidateLines = lines.slice(0, 10);
-
   const bad = /(invoice|rechnung|date|datum|total|summe|mwst|vat|tax|bill to|ship to)/i;
 
   for (const line of candidateLines) {
     if (line.length < 3) continue;
     if (bad.test(line)) continue;
-    // looks like a name (contains letters) and not only numbers
     if (/[A-Za-zÄÖÜäöü]/.test(line) && !/^\d+$/.test(line)) {
-      // avoid super long address lines
       return line.slice(0, 80);
     }
   }
@@ -208,9 +177,7 @@ function classifyType(text: string): string {
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
     const body = (await req.json()) as ReqBody;
@@ -219,7 +186,6 @@ serve(async (req) => {
     const fileType = body.fileType || "unknown";
     const extractedText = normalizeText(body.extractedText || "");
 
-    // --- "Agents" (but no external API) ---
     const vendor_name = findVendor(extractedText) || "Unknown Vendor";
     const invoice_number = findInvoiceNumber(extractedText) || `INV-${Date.now()}`;
     const invoice_date = findDate(extractedText) || new Date().toISOString().slice(0, 10);
@@ -228,8 +194,6 @@ serve(async (req) => {
     const { total_amount, tax_amount } = findTotals(extractedText);
 
     const total = total_amount ?? 0;
-
-    // Fraud/compliance scoring
     const anomalies: string[] = [];
     let risk_score: "low" | "medium" | "high" = "low";
 
@@ -251,32 +215,15 @@ serve(async (req) => {
       invoice_type,
       language: "en",
 
-      ingestion: {
-        valid: true,
-        fileType,
-        fileName,
-        timestamp: new Date().toISOString(),
-      },
-
-      fraud_detection: {
-        risk_score,
-        is_duplicate: false,
-        anomalies,
-        checked_at: new Date().toISOString(),
-      },
-
+      ingestion: { valid: true, fileType, fileName, timestamp: new Date().toISOString() },
+      fraud_detection: { risk_score, is_duplicate: false, anomalies, checked_at: new Date().toISOString() },
       compliance: {
         compliance_status,
         vat_valid: compliance_status === "compliant",
         tax_classification: invoice_type === "services" ? "Service Tax" : "Goods Tax",
         checked_at: new Date().toISOString(),
       },
-
-      reporting: {
-        processed: true,
-        agents_completed: 3,
-        processing_time_ms: Date.now(),
-      },
+      reporting: { processed: true, agents_completed: 3, processing_time_ms: Date.now() },
 
       risk_score,
       compliance_status,
@@ -289,13 +236,9 @@ serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err: any) {
-    console.error("process-invoice error:", err);
-    return new Response(
-      JSON.stringify({ error: err?.message || "Unknown error" }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    return new Response(JSON.stringify({ error: err?.message || "Unknown error" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
