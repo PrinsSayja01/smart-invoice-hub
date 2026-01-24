@@ -6,9 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import {
-  Upload, FileText, Image, X, Loader2, CheckCircle2, AlertCircle, Mail, HardDrive, LogIn, RefreshCw,
-} from "lucide-react";
+import { Upload, FileText, Image, X, Loader2, CheckCircle2, AlertCircle, Mail, HardDrive, LogIn, RefreshCw,} from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+
 
 type ExtractedData = {
   vendor_name: string;
@@ -384,68 +384,69 @@ export default function UploadInvoice() {
 
   // ---- SAVE TO SUPABASE (Storage + DB) ----
   const saveInvoice = async () => {
-    if (!file || !extractedData) return;
+  try {
+    if (!extractedData) return;
+    if (!file) throw new Error("No file selected");
 
-    try {
-      setUploading(true);
+    const { data: sessionData } = await supabase.auth.getSession();
+    const user = sessionData.session?.user;
 
-      const user = await getUser();
-      if (!user?.id) {
-        alert("Please login first.");
-        return;
-      }
+    if (!user) throw new Error("You are not logged in. Please login again.");
 
-      // Upload file to Storage bucket "invoices"
-      const storagePath = `${user.id}/${Date.now()}-${file.name}`;
+    setUploading(true);
 
-      const { error: uploadErr } = await supabase.storage
-        .from("invoices")
-        .upload(storagePath, file, { upsert: true });
+    // 1) Upload file to Storage
+    // IMPORTANT: create a bucket in Supabase called "invoices"
+    const fileExt = file.name.split(".").pop() || "pdf";
+    const filePath = `${user.id}/${Date.now()}-${crypto.randomUUID()}.${fileExt}`;
 
-      if (uploadErr) throw uploadErr;
+    const { error: uploadErr } = await supabase.storage
+      .from("invoices")
+      .upload(filePath, file, { upsert: false });
 
-      const { data: pub } = supabase.storage.from("invoices").getPublicUrl(storagePath);
-      const fileUrl = pub.publicUrl;
+    if (uploadErr) throw uploadErr;
 
-      // Insert invoice row
-      const payload: any = {
-        user_id: user.id,
-        file_url: fileUrl,
-        file_name: file.name,
-        file_type: file.type,
+    // 2) Get public URL (make bucket Public OR use signed URL approach)
+    const { data: publicData } = supabase.storage
+      .from("invoices")
+      .getPublicUrl(filePath);
 
-        vendor_name: extractedData.vendor_name || null,
-        invoice_number: extractedData.invoice_number || null,
-        invoice_date: extractedData.invoice_date || null,
-        total_amount: extractedData.total_amount ? Number(extractedData.total_amount) : null,
-        tax_amount: extractedData.tax_amount ? Number(extractedData.tax_amount) : null,
-        currency: extractedData.currency || "EUR",
-        invoice_type: extractedData.invoice_type || "other",
-        language: "en",
+    const fileUrl = publicData.publicUrl;
 
-        risk_score: extractedData.risk_score || "low",
-        compliance_status: extractedData.compliance_status || "needs_review",
-        is_flagged: !!extractedData.is_flagged,
-        flag_reason: extractedData.flag_reason ?? null,
+    // 3) Insert invoice row
+    const payload = {
+      user_id: user.id,
+      file_name: file.name,
+      file_url: fileUrl,
 
-        agent_processing: {
-          ingestion: { fileName: file.name, fileType: file.type },
-          notes: "free-parser",
-        },
-      };
+      vendor_name: extractedData.vendor_name || null,
+      invoice_number: extractedData.invoice_number || null,
+      invoice_date: extractedData.invoice_date || null,
 
-      const { error: insertErr } = await supabase.from("invoices").insert(payload);
-      if (insertErr) throw insertErr;
+      total_amount: extractedData.total_amount ? Number(extractedData.total_amount) : null,
+      tax_amount: extractedData.tax_amount ? Number(extractedData.tax_amount) : null,
+      currency: extractedData.currency || "EUR",
 
-      alert("✅ Saved! File in Storage + row in invoices table.");
-      resetForm();
-    } catch (e: any) {
-      console.error(e);
-      alert(`❌ Save failed: ${e.message || e}`);
-    } finally {
-      setUploading(false);
-    }
-  };
+      invoice_type: null,
+      risk_score: "low",
+      compliance_status: "needs_review",
+      is_flagged: false,
+      flag_reason: null,
+    };
+
+    const { error: insertErr } = await supabase.from("invoices").insert(payload);
+    if (insertErr) throw insertErr;
+
+    alert("Invoice saved successfully!");
+    resetForm();
+  } catch (e: any) {
+    console.error(e);
+    alert(`Save failed: ${e.message}`);
+  } finally {
+    setUploading(false);
+  }
+};
+
 
   const handleInputChange = (field: keyof ExtractedData, value: string) => {
     if (!extractedData) return;
