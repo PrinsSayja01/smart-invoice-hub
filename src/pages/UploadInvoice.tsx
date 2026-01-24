@@ -263,8 +263,8 @@ export default function UploadInvoice() {
       setUploading(true);
 
       const { data, error } = await supabase.functions.invoke("drive-list", {
-        body: { providerToken },
-      });
+  body: { providerToken, showAll: true }, // ✅ debug mode
+});
 
       if (error) {
         const res = (error as any)?.context?.response;
