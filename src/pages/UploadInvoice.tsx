@@ -155,25 +155,24 @@ export default function UploadInvoice() {
       setUploading(true);
 
       const response = await fetch("/api/drive/list-files", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+  headers: { Authorization: `Bearer ${accessToken}` },
+});
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to fetch files");
-      }
+    const raw = await response.text();
 
-      const data = await response.json();
-      setDriveFiles(data.files || []);
+    let data: any;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error(`API did not return JSON. Status ${response.status}. First 120 chars: ${raw.slice(0, 120)}`);
+    }
 
-      if (data.files?.length === 0) {
-        alert("No PDF or image files found in your Google Drive.");
-      }
-    } catch (error: any) {
-      console.error("Drive fetch error:", error);
-      alert(`Error fetching files: ${error.message}`);
-    } finally {
-      setUploading(false);
+    if (!response.ok) {
+    throw new Error(data.error || "Failed to fetch files");
+    }
+
+     setDriveFiles(data.files || []);
+
     }
   };
 
