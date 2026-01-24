@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { encodeBase64 } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -10,54 +11,53 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const providerToken = body?.providerToken;
-    const fileId = body?.fileId;
+    const { providerToken, fileId } = await req.json().catch(() => ({}));
 
     if (!providerToken || !fileId) {
-      return new Response(JSON.stringify({ error: "Missing providerToken or fileId" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ ok: false, error: "Missing providerToken or fileId" }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+
     const r = await fetch(url, {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
+    const buf = new Uint8Array(await r.arrayBuffer());
+
     if (!r.ok) {
-      const txt = await r.text();
+      // Google might return JSON text inside the body; decode best-effort
+      let details = "";
+      try {
+        details = new TextDecoder().decode(buf);
+      } catch {
+        details = "Could not decode error body";
+      }
+
       return new Response(
         JSON.stringify({
+          ok: false,
           error: "Drive download failed",
           google_status: r.status,
-          google_response: txt,
-          hint:
-            r.status === 401
-              ? "Token expired/invalid → Logout and login again"
-              : r.status === 403
-              ? "Missing Drive scope → Login again and accept Drive permission"
-              : "Check google_response for details",
+          google_body: details,
         }),
-        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Convert bytes to base64 (safe for browser reconstruction)
-    const buf = new Uint8Array(await r.arrayBuffer());
-    let binary = "";
-    for (let i = 0; i < buf.length; i++) binary += String.fromCharCode(buf[i]);
-    const base64 = btoa(binary);
+    const base64 = encodeBase64(buf);
 
-    return new Response(JSON.stringify({ base64 }), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ ok: true, base64 }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   } catch (e: any) {
-    return new Response(JSON.stringify({ error: e?.message || "Unknown error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ ok: false, error: e?.message || "Unknown error" }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 });
