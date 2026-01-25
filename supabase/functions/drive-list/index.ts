@@ -11,45 +11,44 @@ serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const providerToken = body?.providerToken;
+    const providerToken = body?.providerToken as string | undefined;
 
-    if (!providerToken) {
-      return new Response(JSON.stringify({ error: "Missing providerToken" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+    if (!providerToken || providerToken.startsWith("AIza")) {
+      return json200({
+        ok: false,
+        error:
+          "Invalid providerToken. You must send Google OAuth access token (session.provider_token). NOT an API key like AIza...",
       });
     }
 
-    const q = encodeURIComponent(
-      `trashed=false and (mimeType='application/pdf' or mimeType contains 'image/')`
-    );
+    const q = encodeURIComponent(`trashed=false and (mimeType='application/pdf' or mimeType contains 'image/')`);
+    const url =
+      `https://www.googleapis.com/drive/v3/files?q=${q}` +
+      `&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=50`;
 
-    const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=50`;
-
-    const r = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${providerToken}`,
-      },
-    });
-
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${providerToken}` } });
     const txt = await r.text();
 
     if (!r.ok) {
-      return new Response(JSON.stringify({ error: "Drive API failed", status: r.status, details: txt }), {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return json200({ ok: false, error: "Google Drive API failed", status: r.status, details: txt });
     }
 
-    const json = JSON.parse(txt);
-    return new Response(JSON.stringify({ files: json.files || [] }), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    let data: any;
+    try {
+      data = JSON.parse(txt);
+    } catch {
+      return json200({ ok: false, error: "Drive returned non-JSON", details: txt });
+    }
+
+    return json200({ ok: true, files: data.files || [] });
   } catch (e: any) {
-    return new Response(JSON.stringify({ error: e?.message || "Unknown error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return json200({ ok: false, error: e?.message || "Unknown error" });
   }
 });
+
+function json200(obj: any) {
+  return new Response(JSON.stringify(obj), {
+    status: 200,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
