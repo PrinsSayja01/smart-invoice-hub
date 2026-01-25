@@ -10,20 +10,15 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { providerToken, fileId } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const providerToken = body?.providerToken;
+    const fileId = body?.fileId;
 
     if (!providerToken || !fileId) {
       return new Response(JSON.stringify({ error: "Missing providerToken or fileId" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
-    }
-
-    if (providerToken.startsWith("AIza")) {
-      return new Response(
-        JSON.stringify({ error: "You passed an API key (AIza...). Drive needs OAuth access token (ya29...)." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
     }
 
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
@@ -38,13 +33,14 @@ serve(async (req) => {
     }
 
     const buf = new Uint8Array(await r.arrayBuffer());
-
-    // base64 (safe for browser)
+    const chunkSize = 0x8000;
     let binary = "";
-    for (let i = 0; i < buf.length; i++) binary += String.fromCharCode(buf[i]);
-    const base64 = btoa(binary);
+    for (let i = 0; i < buf.length; i += chunkSize) {
+      binary += String.fromCharCode(...buf.subarray(i, i + chunkSize));
+    }
+    const b64 = btoa(binary);
 
-    return new Response(JSON.stringify({ base64 }), {
+    return new Response(JSON.stringify({ base64: b64 }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
