@@ -24,31 +24,23 @@ serve(async (req) => {
       `trashed=false and (mimeType='application/pdf' or mimeType contains 'image/')`
     );
 
-    const url =
-      `https://www.googleapis.com/drive/v3/files?` +
-      `q=${q}` +
-      `&fields=files(id,name,mimeType,size,modifiedTime)` +
-      `&pageSize=50` +
-      `&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+    const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,modifiedTime)&pageSize=50`;
 
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${providerToken}` } });
+    const r = await fetch(url, {
+      headers: { Authorization: `Bearer ${providerToken}` },
+    });
+
     const txt = await r.text();
 
     if (!r.ok) {
-      return new Response(
-        JSON.stringify({
-          error: "Google Drive API failed",
-          status: r.status,
-          details: txt,
-        }),
-        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Drive API failed", status: r.status, details: txt }), {
+        status: 502,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const parsed = JSON.parse(txt);
-    const files = Array.isArray(parsed?.files) ? parsed.files : [];
-
-    return new Response(JSON.stringify({ files }), {
+    const json = JSON.parse(txt);
+    return new Response(JSON.stringify({ files: json.files || [] }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
