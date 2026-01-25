@@ -6,134 +6,121 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+function base64UrlToBase64(b64url: string) {
+  return b64url.replace(/-/g, "+").replace(/_/g, "/");
+}
+
+function findAttachments(payload: any) {
+  const out: any[] = [];
+  const walk = (part: any) => {
+    if (!part) return;
+    const filename = part.filename;
+    const mimeType = part.mimeType;
+    const attId = part.body?.attachmentId;
+
+    if (filename && attId && mimeType) {
+      const ok =
+        mimeType === "application/pdf" ||
+        mimeType.startsWith("image/") ||
+        filename.toLowerCase().endsWith(".pdf") ||
+        filename.toLowerCase().endsWith(".png") ||
+        filename.toLowerCase().endsWith(".jpg") ||
+        filename.toLowerCase().endsWith(".jpeg");
+
+      if (ok) {
+        out.push({
+          filename,
+          mimeType,
+          attachmentId: attId,
+          size: part.body?.size || undefined,
+        });
+      }
+    }
+
+    const parts = part.parts;
+    if (Array.isArray(parts)) parts.forEach(walk);
+  };
+
+  walk(payload);
+  return out;
+}
+
+function header(payload: any, name: string) {
+  const h = payload?.headers || [];
+  const found = h.find((x: any) => (x.name || "").toLowerCase() === name.toLowerCase());
+  return found?.value || null;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
     const body = await req.json().catch(() => ({}));
-    const providerToken = body?.providerToken as string | undefined;
+    const providerToken = body?.providerToken;
+    const maxResults = body?.maxResults ?? 20;
+    const days = body?.days ?? 90;
 
-    // IMPORTANT: providerToken must be OAuth access token (NOT AIza... api key)
-    if (!providerToken || providerToken.startsWith("AIza")) {
-      return json200({
-        ok: false,
-        error:
-          "Invalid providerToken. You must send Google OAuth access token (session.provider_token). NOT an API key like AIza...",
+    if (!providerToken) {
+      return new Response(JSON.stringify({ error: "Missing providerToken" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Gmail query: last 90 days, has attachment, common invoice types
+    // Gmail search query: attachments + last X days + common invoice file types
     const q = encodeURIComponent(
-      `newer_than:90d has:attachment (filename:pdf OR filename:png OR filename:jpg OR filename:jpeg)`
+      `newer_than:${days}d has:attachment (filename:pdf OR filename:png OR filename:jpg OR filename:jpeg)`
     );
 
-    const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=25`;
+    const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=${maxResults}`;
 
     const listRes = await fetch(listUrl, {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
     const listTxt = await listRes.text();
-
     if (!listRes.ok) {
-      return json200({
-        ok: false,
-        error: "Gmail API list failed",
-        status: listRes.status,
-        details: listTxt,
+      return new Response(JSON.stringify({ error: "Gmail API list failed", status: listRes.status, details: listTxt }), {
+        status: 502,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    let listData: any;
-    try {
-      listData = JSON.parse(listTxt);
-    } catch {
-      return json200({
-        ok: false,
-        error: "Gmail list returned non-JSON",
-        details: listTxt,
-      });
-    }
-
-    const msgs = (listData.messages || []) as { id: string; threadId?: string }[];
+    const list = JSON.parse(listTxt);
+    const ids = Array.isArray(list?.messages) ? list.messages.map((m: any) => m.id) : [];
 
     const results: any[] = [];
+    for (const id of ids) {
+      const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`;
+      const msgRes = await fetch(msgUrl, { headers: { Authorization: `Bearer ${providerToken}` } });
+      const msgTxt = await msgRes.text();
+      if (!msgRes.ok) continue;
 
-    for (const m of msgs.slice(0, 15)) {
-      const getUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`;
+      const msg = JSON.parse(msgTxt);
+      const payload = msg?.payload;
+      const attachments = findAttachments(payload);
 
-      const getRes = await fetch(getUrl, {
-        headers: { Authorization: `Bearer ${providerToken}` },
+      if (!attachments.length) continue;
+
+      results.push({
+        id: msg.id,
+        threadId: msg.threadId,
+        subject: header(payload, "Subject"),
+        from: header(payload, "From"),
+        date: header(payload, "Date"),
+        snippet: msg.snippet,
+        attachments,
       });
-
-      const getTxt = await getRes.text();
-
-      if (!getRes.ok) {
-        // don’t crash the function; just skip this email
-        continue;
-      }
-
-      let msg: any;
-      try {
-        msg = JSON.parse(getTxt);
-      } catch {
-        continue;
-      }
-
-      const headers = msg?.payload?.headers || [];
-      const subject = headers.find((h: any) => h.name === "Subject")?.value || "";
-      const from = headers.find((h: any) => h.name === "From")?.value || "";
-
-      const attachments = extractAttachments(msg?.payload);
-
-      if (attachments.length > 0) {
-        results.push({
-          id: msg.id,
-          threadId: msg.threadId,
-          internalDate: msg.internalDate,
-          subject,
-          from,
-          attachments,
-        });
-      }
     }
 
-    return json200({ ok: true, messages: results });
+    return new Response(JSON.stringify({ messages: results }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (e: any) {
-    return json200({ ok: false, error: e?.message || "Unknown error" });
+    return new Response(JSON.stringify({ error: e?.message || "Unknown error" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
-
-function extractAttachments(payload: any) {
-  const out: { filename: string; mimeType: string; size: number; attachmentId: string }[] = [];
-
-  function walk(part: any) {
-    if (!part) return;
-
-    const filename = part.filename;
-    const mimeType = part.mimeType;
-    const body = part.body;
-
-    if (filename && body?.attachmentId) {
-      out.push({
-        filename,
-        mimeType: mimeType || "application/octet-stream",
-        size: body.size || 0,
-        attachmentId: body.attachmentId,
-      });
-    }
-
-    const parts = part.parts || [];
-    for (const p of parts) walk(p);
-  }
-
-  walk(payload);
-  return out;
-}
-
-function json200(obj: any) {
-  return new Response(JSON.stringify(obj), {
-    status: 200, // ✅ ALWAYS 200 => invoke() will not hide errors
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
