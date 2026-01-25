@@ -10,7 +10,8 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { providerToken } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const providerToken = body?.providerToken;
 
     if (!providerToken) {
       return new Response(JSON.stringify({ error: "Missing providerToken" }), {
@@ -19,37 +20,35 @@ serve(async (req) => {
       });
     }
 
-    // ✅ IMPORTANT:
-    // includeItemsFromAllDrives + supportsAllDrives makes it list shared drives too.
-    // If your invoices are in "Shared Drives" or "Shared with me", without these you may get empty result.
     const q = encodeURIComponent(
       `trashed=false and (mimeType='application/pdf' or mimeType contains 'image/')`
     );
 
     const url =
-      `https://www.googleapis.com/drive/v3/files` +
-      `?q=${q}` +
+      `https://www.googleapis.com/drive/v3/files?` +
+      `q=${q}` +
       `&fields=files(id,name,mimeType,size,modifiedTime)` +
       `&pageSize=50` +
-      `&supportsAllDrives=true` +
-      `&includeItemsFromAllDrives=true`;
+      `&supportsAllDrives=true&includeItemsFromAllDrives=true`;
 
-    const r = await fetch(url, {
-      headers: { Authorization: `Bearer ${providerToken}` },
-    });
-
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${providerToken}` } });
     const txt = await r.text();
 
     if (!r.ok) {
       return new Response(
-        JSON.stringify({ error: "Google Drive API failed", status: r.status, details: txt }),
+        JSON.stringify({
+          error: "Google Drive API failed",
+          status: r.status,
+          details: txt,
+        }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // txt is already JSON string from Google.
-    // return it as JSON consistently
-    return new Response(txt, {
+    const parsed = JSON.parse(txt);
+    const files = Array.isArray(parsed?.files) ? parsed.files : [];
+
+    return new Response(JSON.stringify({ files }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
