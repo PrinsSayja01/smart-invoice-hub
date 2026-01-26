@@ -1,57 +1,75 @@
-/// <reference lib="deno.ns" />
+// supabase/functions/drive-list/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+function corsHeaders(origin?: string) {
+  return {
+    "Access-Control-Allow-Origin": origin ?? "*",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  const origin = req.headers.get("origin") ?? "*";
+
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders(origin) });
+  }
 
   try {
-    const { providerToken, pageSize } = await req.json();
+    const { providerToken, pageSize = 100 } = await req.json();
 
-    if (!providerToken || typeof providerToken !== "string") {
-      return json(400, { error: "Missing providerToken" });
+    if (!providerToken) {
+      return new Response(
+        JSON.stringify({ error: "Missing providerToken" }),
+        { status: 400, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+      );
     }
 
     const q =
       "(mimeType='application/pdf' or mimeType contains 'image/') and trashed=false";
 
-    const url =
-      `https://www.googleapis.com/drive/v3/files?` +
-      new URLSearchParams({
-        q,
-        pageSize: String(pageSize ?? 50),
-        fields: "files(id,name,mimeType,size,modifiedTime)",
-        orderBy: "modifiedTime desc",
-      }).toString();
+    const url = new URL("https://www.googleapis.com/drive/v3/files");
+    url.searchParams.set("q", q);
+    url.searchParams.set("pageSize", String(pageSize));
+    url.searchParams.set(
+      "fields",
+      "files(id,name,mimeType,size,modifiedTime),nextPageToken",
+    );
 
-    const r = await fetch(url, {
+    // ✅ Shared drives + Shared with me support
+    url.searchParams.set("supportsAllDrives", "true");
+    url.searchParams.set("includeItemsFromAllDrives", "true");
+
+    const res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
-    const text = await r.text();
-    if (!r.ok) {
-      return json(r.status, {
-        error: "Google Drive API failed",
-        status: r.status,
-        details: text,
-      });
+    const text = await res.text();
+
+    if (!res.ok) {
+      return new Response(
+        JSON.stringify({
+          error: "Google Drive API failed",
+          status: res.status,
+          details: text,
+        }),
+        { status: 200, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+      );
     }
 
-    const data = JSON.parse(text);
-    return json(200, { files: data.files ?? [] });
+    const json = JSON.parse(text);
+    const files = Array.isArray(json.files) ? json.files : [];
+
+    return new Response(
+      JSON.stringify({ files }),
+      { headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+    );
   } catch (e) {
-    return json(500, { error: "Unhandled error", message: String(e) });
+    return new Response(
+      JSON.stringify({ error: "drive-list failed", message: String(e?.message ?? e) }),
+      { status: 500, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+    );
   }
 });
