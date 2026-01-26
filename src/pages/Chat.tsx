@@ -3,7 +3,6 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/lib/auth';
 import { useToast } from '@/hooks/use-toast';
@@ -52,8 +51,8 @@ export default function Chat() {
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
 
-  // ✅ IMPORTANT: ScrollArea scrolls inside the viewport; we scroll this div.
-  const viewportRef = useRef<HTMLDivElement | null>(null);
+  // ✅ REAL scroll container ref
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -64,17 +63,17 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
+  // ✅ Auto-scroll when messages update
   useEffect(() => {
-    if (!viewportRef.current) return;
-    viewportRef.current.scrollTo({
-      top: viewportRef.current.scrollHeight,
-      behavior: 'smooth',
-    });
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }, [messages]);
 
   const loadChatHistory = async () => {
     if (!user) return;
     setLoadingHistory(true);
+
     try {
       const { data, error } = await supabase
         .from('chat_messages')
@@ -140,26 +139,20 @@ export default function Chat() {
       ]);
 
       try {
-        // Save user message (don’t block UI on it)
+        // Save user message async
         supabase
           .from('chat_messages')
           .insert({ user_id: user.id, role: 'user', content: userMessage.content })
           .then();
 
-        // ✅ Get Supabase JWT so Edge Function can read invoices for THIS user
         const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
         if (sessionErr) throw sessionErr;
 
         const jwt = sessionData?.session?.access_token;
-        if (!jwt) {
-          throw new Error('You are not logged in. Please login again.');
-        }
+        if (!jwt) throw new Error('You are not logged in. Please login again.');
 
-        if (!SUPABASE_ANON_KEY) {
-          throw new Error('Missing VITE_SUPABASE_ANON_KEY in your frontend env.');
-        }
+        if (!SUPABASE_ANON_KEY) throw new Error('Missing VITE_SUPABASE_ANON_KEY in frontend env.');
 
-        // Send last 10 messages to backend
         const payload = {
           messages: [...messages, userMessage].slice(-10).map((m) => ({
             role: m.role,
@@ -178,22 +171,20 @@ export default function Chat() {
           signal: abortRef.current.signal,
         });
 
-        // Backend may return json errors
         if (!response.ok) {
-          const errText = await response.text().catch(() => '');
+          const txt = await response.text().catch(() => '');
           let msg = 'Failed to get response';
           try {
-            const j = JSON.parse(errText);
+            const j = JSON.parse(txt);
             msg = j?.error || msg;
           } catch {
-            if (errText) msg = errText;
+            if (txt) msg = txt;
           }
           throw new Error(msg);
         }
 
         if (!response.body) throw new Error('No response body');
 
-        // ✅ Stream (SSE) parsing
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let content = '';
@@ -205,27 +196,24 @@ export default function Chat() {
 
           buffer += decoder.decode(value, { stream: true });
 
-          let newlineIdx: number;
-          while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-            let line = buffer.slice(0, newlineIdx);
-            buffer = buffer.slice(newlineIdx + 1);
+          let idx: number;
+          while ((idx = buffer.indexOf('\n')) !== -1) {
+            let line = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 1);
 
             if (line.endsWith('\r')) line = line.slice(0, -1);
-            if (!line.startsWith('data: ') || line.trim() === '') continue;
+            if (!line.startsWith('data: ')) continue;
 
             const jsonStr = line.slice(6).trim();
+            if (!jsonStr) continue;
             if (jsonStr === '[DONE]') break;
 
             try {
               const parsed = JSON.parse(jsonStr);
-
-              // Support OpenAI-style delta
               const delta = parsed?.choices?.[0]?.delta?.content;
-
-              // Also support "answer" JSON (non-stream) if backend returns it inside data
               const direct = parsed?.answer;
-
               const chunk = delta || direct;
+
               if (chunk) {
                 content += chunk;
                 setMessages((prev) =>
@@ -233,16 +221,13 @@ export default function Chat() {
                 );
               }
             } catch {
-              // If chunk not valid JSON yet, put back and wait for more bytes
               buffer = line + '\n' + buffer;
               break;
             }
           }
         }
 
-        // Save assistant message
-        const finalAnswer =
-          content.trim() || "I couldn't generate an answer. Please try again.";
+        const finalAnswer = content.trim() || "I couldn't generate an answer. Please try again.";
         setMessages((prev) =>
           prev.map((m) => (m.id === assistantId ? { ...m, content: finalAnswer } : m))
         );
@@ -254,9 +239,7 @@ export default function Chat() {
       } catch (error: any) {
         if (error?.name === 'AbortError') return;
 
-        // Remove empty assistant bubble
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
-
         toast({
           variant: 'destructive',
           title: 'Chat error',
@@ -291,103 +274,97 @@ export default function Chat() {
         </div>
 
         {/* Chat Area */}
-        <Card className="flex-1 flex flex-col overflow-hidden shadow-xl border-0 bg-card/50 backdrop-blur-sm">
-          <CardContent className="flex-1 flex flex-col p-0">
-            {/* ✅ Scroll fix: ScrollArea contains a real scrollable viewport div */}
-            <ScrollArea className="flex-1">
-              <div ref={viewportRef} className="h-full overflow-y-auto p-4 md:p-6">
-                {loadingHistory ? (
-                  <div className="flex flex-col items-center justify-center h-full gap-3">
-                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                    <p className="text-sm text-muted-foreground">Loading your conversation...</p>
-                  </div>
-                ) : messages.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-center py-8">
-                    <div className="relative mb-6">
-                      <div className="absolute inset-0 bg-primary/20 blur-2xl rounded-full scale-150" />
-                      <div className="relative p-5 rounded-2xl bg-gradient-to-br from-primary to-primary/80 text-primary-foreground shadow-lg">
-                        <MessageSquare className="h-10 w-10" />
-                      </div>
+        <Card className="flex-1 flex flex-col overflow-hidden shadow-xl border-0 bg-card/50 backdrop-blur-sm min-h-0">
+          <CardContent className="flex-1 flex flex-col p-0 min-h-0">
+            {/* ✅ REAL SCROLLER (works 100%) */}
+            <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
+              {loadingHistory ? (
+                <div className="flex flex-col items-center justify-center h-full gap-3">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                  <p className="text-sm text-muted-foreground">Loading your conversation...</p>
+                </div>
+              ) : messages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-center py-8">
+                  <div className="relative mb-6">
+                    <div className="absolute inset-0 bg-primary/20 blur-2xl rounded-full scale-150" />
+                    <div className="relative p-5 rounded-2xl bg-gradient-to-br from-primary to-primary/80 text-primary-foreground shadow-lg">
+                      <MessageSquare className="h-10 w-10" />
                     </div>
-                    <h3 className="text-xl font-semibold mb-2">Start a Conversation</h3>
-                    <p className="text-muted-foreground mb-8 max-w-sm">
-                      I can analyze your invoices, find patterns, detect issues, and answer any questions about your
-                      data.
-                    </p>
+                  </div>
+                  <h3 className="text-xl font-semibold mb-2">Start a Conversation</h3>
+                  <p className="text-muted-foreground mb-8 max-w-sm">
+                    I can analyze your invoices, find patterns, detect issues, and answer any questions about your
+                    data.
+                  </p>
 
-                    <div className="w-full max-w-lg">
-                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">
-                        Try asking me
-                      </p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {SUGGESTED_QUESTIONS.map((q, i) => (
-                          <button
-                            key={i}
-                            onClick={() => sendMessage(q.text)}
-                            className="group flex items-center gap-3 p-4 rounded-xl bg-muted/50 hover:bg-muted border border-border/50 hover:border-primary/30 transition-all duration-200 text-left hover:shadow-md"
-                          >
-                            <div className={cn('p-2 rounded-lg bg-background', q.color)}>
-                              <q.icon className="h-4 w-4" />
-                            </div>
-                            <span className="text-sm font-medium group-hover:text-primary transition-colors">
-                              {q.text}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
+                  <div className="w-full max-w-lg">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">Try asking me</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {SUGGESTED_QUESTIONS.map((q, i) => (
+                        <button
+                          key={i}
+                          onClick={() => sendMessage(q.text)}
+                          className="group flex items-center gap-3 p-4 rounded-xl bg-muted/50 hover:bg-muted border border-border/50 hover:border-primary/30 transition-all duration-200 text-left hover:shadow-md"
+                        >
+                          <div className={cn('p-2 rounded-lg bg-background', q.color)}>
+                            <q.icon className="h-4 w-4" />
+                          </div>
+                          <span className="text-sm font-medium group-hover:text-primary transition-colors">{q.text}</span>
+                        </button>
+                      ))}
                     </div>
                   </div>
-                ) : (
-                  <div className="space-y-6">
-                    {messages.map((message) => (
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={cn('flex gap-4', message.role === 'user' && 'flex-row-reverse')}
+                    >
                       <div
-                        key={message.id}
-                        className={cn('flex gap-4', message.role === 'user' && 'flex-row-reverse')}
+                        className={cn(
+                          'flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center shadow-sm',
+                          message.role === 'user'
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-gradient-to-br from-muted to-muted/80 border border-border'
+                        )}
                       >
+                        {message.role === 'user' ? (
+                          <User className="h-5 w-5" />
+                        ) : (
+                          <Bot className="h-5 w-5 text-primary" />
+                        )}
+                      </div>
+
+                      <div className={cn('flex-1 max-w-[80%]', message.role === 'user' && 'text-right')}>
                         <div
                           className={cn(
-                            'flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center shadow-sm',
+                            'inline-block p-4 rounded-2xl',
                             message.role === 'user'
-                              ? 'bg-primary text-primary-foreground'
-                              : 'bg-gradient-to-br from-muted to-muted/80 border border-border'
+                              ? 'bg-primary text-primary-foreground rounded-tr-md'
+                              : 'bg-muted rounded-tl-md'
                           )}
                         >
-                          {message.role === 'user' ? (
-                            <User className="h-5 w-5" />
+                          {message.content ? (
+                            <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
                           ) : (
-                            <Bot className="h-5 w-5 text-primary" />
+                            <div className="flex items-center gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <span className="text-sm">Thinking...</span>
+                            </div>
                           )}
                         </div>
 
-                        <div className={cn('flex-1 max-w-[80%]', message.role === 'user' && 'text-right')}>
-                          <div
-                            className={cn(
-                              'inline-block p-4 rounded-2xl',
-                              message.role === 'user'
-                                ? 'bg-primary text-primary-foreground rounded-tr-md'
-                                : 'bg-muted rounded-tl-md'
-                            )}
-                          >
-                            {message.content ? (
-                              <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
-                            ) : (
-                              <div className="flex items-center gap-2">
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                                <span className="text-sm">Thinking...</span>
-                              </div>
-                            )}
-                          </div>
-
-                          <p className={cn('text-xs mt-2 text-muted-foreground', message.role === 'user' && 'text-right')}>
-                            {format(new Date(message.created_at), 'h:mm a')}
-                          </p>
-                        </div>
+                        <p className={cn('text-xs mt-2 text-muted-foreground', message.role === 'user' && 'text-right')}>
+                          {format(new Date(message.created_at), 'h:mm a')}
+                        </p>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* Input Area */}
             <div className="p-4 md:p-6 border-t border-border bg-background/80 backdrop-blur-sm">

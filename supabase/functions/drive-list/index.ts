@@ -1,75 +1,63 @@
 // supabase/functions/drive-list/index.ts
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-function corsHeaders(origin?: string) {
-  return {
-    "Access-Control-Allow-Origin": origin ?? "*",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-  };
-}
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
 
-serve(async (req) => {
-  const origin = req.headers.get("origin") ?? "*";
-
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders(origin) });
-  }
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    const { providerToken, pageSize = 100 } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const providerToken = body?.providerToken;
 
     if (!providerToken) {
-      return new Response(
-        JSON.stringify({ error: "Missing providerToken" }),
-        { status: 400, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ error: "Missing providerToken" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
+    // Search ALL user Drive, not just root.
     const q =
-      "(mimeType='application/pdf' or mimeType contains 'image/') and trashed=false";
+      `(mimeType='application/pdf' or mimeType contains 'image/') and trashed=false`;
 
     const url = new URL("https://www.googleapis.com/drive/v3/files");
     url.searchParams.set("q", q);
-    url.searchParams.set("pageSize", String(pageSize));
-    url.searchParams.set(
-      "fields",
-      "files(id,name,mimeType,size,modifiedTime),nextPageToken",
-    );
-
-    // ✅ Shared drives + Shared with me support
+    url.searchParams.set("pageSize", "50");
+    url.searchParams.set("fields", "files(id,name,mimeType,size,modifiedTime)");
+    url.searchParams.set("orderBy", "modifiedTime desc");
     url.searchParams.set("supportsAllDrives", "true");
     url.searchParams.set("includeItemsFromAllDrives", "true");
 
-    const res = await fetch(url.toString(), {
+    const r = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
-    const text = await res.text();
-
-    if (!res.ok) {
+    const text = await r.text();
+    if (!r.ok) {
       return new Response(
         JSON.stringify({
           error: "Google Drive API failed",
-          status: res.status,
+          status: r.status,
           details: text,
         }),
-        { status: 200, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const json = JSON.parse(text);
-    const files = Array.isArray(json.files) ? json.files : [];
-
-    return new Response(
-      JSON.stringify({ files }),
-      { headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ files: json.files || [] }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (e) {
-    return new Response(
-      JSON.stringify({ error: "drive-list failed", message: String(e?.message ?? e) }),
-      { status: 500, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ error: String(e) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
