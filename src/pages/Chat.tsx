@@ -7,19 +7,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/lib/auth';
 import { useToast } from '@/hooks/use-toast';
-import {
-  Send,
-  Bot,
-  User,
-  Loader2,
-  Sparkles,
-  Trash2,
-  MessageSquare,
-  FileText,
-  TrendingUp,
-  AlertCircle,
-  HelpCircle,
-} from 'lucide-react';
+import { Send, Bot, User, Loader2, Sparkles, Trash2, MessageSquare, FileText, TrendingUp, AlertCircle, HelpCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
 
@@ -37,11 +25,7 @@ const SUGGESTED_QUESTIONS = [
   { icon: HelpCircle, text: 'Compliance summary', color: 'text-purple-500' },
 ];
 
-// Keep your URL
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
-
-// IMPORTANT: this should be your Supabase anon/publishable key
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 
 export default function Chat() {
   const { user } = useAuth();
@@ -75,7 +59,7 @@ export default function Chat() {
       .limit(50);
 
     if (error) {
-      toast({ variant: 'destructive', title: 'Load failed', description: error.message });
+      toast({ variant: 'destructive', title: 'Error', description: error.message });
     } else if (data) {
       setMessages(data as Message[]);
     }
@@ -88,7 +72,7 @@ export default function Chat() {
 
     const { error } = await supabase.from('chat_messages').delete().eq('user_id', user.id);
     if (error) {
-      toast({ variant: 'destructive', title: 'Clear failed', description: error.message });
+      toast({ variant: 'destructive', title: 'Error', description: error.message });
       return;
     }
 
@@ -96,139 +80,121 @@ export default function Chat() {
     toast({ title: 'Chat cleared', description: 'Your conversation history has been deleted.' });
   };
 
-  const sendMessage = useCallback(
-    async (messageText: string) => {
-      if (!messageText.trim() || loading || !user) return;
+  const sendMessage = useCallback(async (messageText: string) => {
+    if (!messageText.trim() || loading || !user) return;
 
-      const userMessage: Message = {
-        id: crypto.randomUUID(),
+    const userMessage: Message = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: messageText.trim(),
+      created_at: new Date().toISOString(),
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setInput('');
+    setLoading(true);
+
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+
+    try {
+      // Save user msg (don’t block UI)
+      supabase.from('chat_messages').insert({
+        user_id: user.id,
         role: 'user',
-        content: messageText.trim(),
-        created_at: new Date().toISOString(),
-      };
+        content: userMessage.content,
+      }).then();
 
-      setMessages((prev) => [...prev, userMessage]);
-      setInput('');
-      setLoading(true);
+      // ✅ IMPORTANT: Use real user session token
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
 
-      abortRef.current?.abort();
-      abortRef.current = new AbortController();
+      if (sessionErr || !accessToken) {
+        throw new Error('You are not logged in. Please login again.');
+      }
 
-      try {
-        // Save user message (non-blocking)
-        supabase.from('chat_messages').insert({
-          user_id: user.id,
-          role: 'user',
-          content: userMessage.content,
-        }).then();
+      const response = await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          messages: [...messages, userMessage].slice(-10).map(m => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+        signal: abortRef.current.signal,
+      });
 
-        // ✅ IMPORTANT: get REAL Supabase session token
-        const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
-        if (sessionErr) throw sessionErr;
+      // If backend returned JSON error
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || errorData.details || 'Failed to get response');
+      }
 
-        const accessToken = sessionData.session?.access_token;
-        if (!accessToken) {
-          throw new Error('No active session token. Please logout and login again.');
-        }
+      if (!response.body) throw new Error('No response body');
 
-        const response = await fetch(CHAT_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            // ✅ This is what lets your Edge Function read invoices for THIS user
-            Authorization: `Bearer ${accessToken}`,
-            // ✅ Supabase gateway expects apikey header in many setups
-            apikey: SUPABASE_ANON_KEY,
-          },
-          body: JSON.stringify({
-            messages: [...messages, userMessage].slice(-10).map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
-          }),
-          signal: abortRef.current.signal,
-        });
+      const assistantId = crypto.randomUUID();
+      setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '', created_at: new Date().toISOString() }]);
 
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => '');
-          // try json if possible
-          let errorData: any = {};
-          try { errorData = JSON.parse(errorText); } catch {}
-          const msg = errorData?.error || errorData?.details || errorText || 'Failed to get response';
-          throw new Error(msg);
-        }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let content = '';
+      let buffer = '';
 
-        if (!response.body) throw new Error('No response body (stream missing).');
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-        // Add assistant placeholder
-        const assistantId = crypto.randomUUID();
-        setMessages((prev) => [
-          ...prev,
-          { id: assistantId, role: 'assistant', content: '', created_at: new Date().toISOString() },
-        ]);
+        buffer += decoder.decode(value, { stream: true });
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let content = '';
-        let buffer = '';
+        let newlineIdx: number;
+        while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+          let line = buffer.slice(0, newlineIdx);
+          buffer = buffer.slice(newlineIdx + 1);
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+          if (line.endsWith('\r')) line = line.slice(0, -1);
+          if (!line.startsWith('data: ') || line.trim() === '') continue;
 
-          buffer += decoder.decode(value, { stream: true });
+          const jsonStr = line.slice(6).trim();
+          if (jsonStr === '[DONE]') break;
 
-          let newlineIdx: number;
-          while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-            let line = buffer.slice(0, newlineIdx);
-            buffer = buffer.slice(newlineIdx + 1);
-
-            if (line.endsWith('\r')) line = line.slice(0, -1);
-            if (!line.startsWith('data: ')) continue;
-
-            const jsonStr = line.slice(6).trim();
-            if (!jsonStr || jsonStr === '[DONE]') continue;
-
-            try {
-              const parsed = JSON.parse(jsonStr);
-              const delta = parsed?.choices?.[0]?.delta?.content;
-
-              if (delta) {
-                content += delta;
-                setMessages((prev) =>
-                  prev.map((m) => (m.id === assistantId ? { ...m, content } : m))
-                );
-              }
-            } catch {
-              // ignore partial lines
+          try {
+            const delta = JSON.parse(jsonStr).choices?.[0]?.delta?.content;
+            if (delta) {
+              content += delta;
+              setMessages(prev => prev.map(m => (m.id === assistantId ? { ...m, content } : m)));
             }
+          } catch {
+            // If partial JSON line, put back and wait for more chunks
+            buffer = line + '\n' + buffer;
+            break;
           }
         }
-
-        if (content) {
-          supabase.from('chat_messages').insert({
-            user_id: user.id,
-            role: 'assistant',
-            content,
-          }).then();
-        }
-      } catch (error: any) {
-        if (error?.name === 'AbortError') return;
-        toast({
-          variant: 'destructive',
-          title: 'Chat error',
-          description: error?.message || 'Failed to send message',
-        });
-
-        // remove empty assistant bubble if any
-        setMessages((prev) => prev.filter((m) => m.role !== 'assistant' || m.content));
-      } finally {
-        setLoading(false);
-        inputRef.current?.focus();
       }
-    },
-    [loading, messages, user, toast]
-  );
+
+      if (content.trim()) {
+        supabase.from('chat_messages').insert({
+          user_id: user.id,
+          role: 'assistant',
+          content,
+        }).then();
+      }
+    } catch (error: any) {
+      if (error.name === 'AbortError') return;
+      toast({
+        variant: 'destructive',
+        title: 'Chat error',
+        description: error.message || 'Failed to send message',
+      });
+      setMessages(prev => prev.filter(m => m.content || m.role === 'user'));
+    } finally {
+      setLoading(false);
+      inputRef.current?.focus();
+    }
+  }, [loading, messages, user, toast]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -244,7 +210,9 @@ export default function Chat() {
             <Sparkles className="h-4 w-4" />
             <span className="text-sm font-medium">AI-Powered Assistant</span>
           </div>
-          <h1 className="text-3xl md:text-4xl font-bold mb-2">How can I help you today?</h1>
+          <h1 className="text-3xl md:text-4xl font-bold mb-2">
+            How can I help you today?
+          </h1>
           <p className="text-muted-foreground max-w-md mx-auto">
             Ask me anything about your invoices - I'll analyze your data and provide insights instantly.
           </p>
@@ -283,7 +251,7 @@ export default function Chat() {
                           onClick={() => sendMessage(q.text)}
                           className="group flex items-center gap-3 p-4 rounded-xl bg-muted/50 hover:bg-muted border border-border/50 hover:border-primary/30 transition-all duration-200 text-left hover:shadow-md"
                         >
-                          <div className={cn('p-2 rounded-lg bg-background', q.color)}>
+                          <div className={cn("p-2 rounded-lg bg-background", q.color)}>
                             <q.icon className="h-4 w-4" />
                           </div>
                           <span className="text-sm font-medium group-hover:text-primary transition-colors">
@@ -315,7 +283,6 @@ export default function Chat() {
                           <Bot className="h-5 w-5 text-primary" />
                         )}
                       </div>
-
                       <div className={cn('flex-1 max-w-[80%]', message.role === 'user' && 'text-right')}>
                         <div
                           className={cn(
@@ -334,12 +301,7 @@ export default function Chat() {
                             </div>
                           )}
                         </div>
-                        <p
-                          className={cn(
-                            'text-xs mt-2 text-muted-foreground',
-                            message.role === 'user' && 'text-right'
-                          )}
-                        >
+                        <p className={cn('text-xs mt-2 text-muted-foreground', message.role === 'user' && 'text-right')}>
                           {format(new Date(message.created_at), 'h:mm a')}
                         </p>
                       </div>
@@ -364,7 +326,6 @@ export default function Chat() {
                   </Button>
                 </div>
               )}
-
               <form onSubmit={handleSubmit} className="flex gap-3">
                 <div className="flex-1 relative">
                   <Input
@@ -376,7 +337,6 @@ export default function Chat() {
                     className="pr-12 py-6 text-base rounded-xl border-2 border-border focus:border-primary transition-colors"
                   />
                 </div>
-
                 <Button
                   type="submit"
                   disabled={!input.trim() || loading}
@@ -386,7 +346,6 @@ export default function Chat() {
                   {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
                 </Button>
               </form>
-
               <p className="text-xs text-center text-muted-foreground mt-3">
                 AI responses are based on your invoice data. Always verify important information.
               </p>
