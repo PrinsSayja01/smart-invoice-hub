@@ -1,10 +1,9 @@
-// supabase/functions/drive-download/index.ts
+/// <reference lib="deno.ns" />
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -15,74 +14,43 @@ function json(status: number, body: unknown) {
   });
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
+function toBase64(bytes: Uint8Array) {
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
 }
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    if (req.method !== "POST") return json(405, { error: "Method not allowed" });
+    const { providerToken, fileId } = await req.json();
+    if (!providerToken) return json(400, { error: "Missing providerToken" });
+    if (!fileId) return json(400, { error: "Missing fileId" });
 
-    const body = await req.json().catch(() => null);
-    const providerToken = body?.providerToken;
-    const fileId = body?.fileId;
+    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
 
-    if (!providerToken || typeof providerToken !== "string") {
-      return json(401, { error: "Missing providerToken" });
-    }
-    if (!fileId || typeof fileId !== "string") {
-      return json(400, { error: "Missing fileId" });
-    }
-
-    // 1) Get file metadata (mimeType/name)
-    const metaUrl =
-      `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,size&supportsAllDrives=true`;
-
-    const metaRes = await fetch(metaUrl, {
+    const r = await fetch(url, {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
-    const metaText = await metaRes.text();
-    if (!metaRes.ok) {
-      return json(metaRes.status, {
-        error: "Drive metadata failed",
-        status: metaRes.status,
-        details: metaText,
+    if (!r.ok) {
+      const text = await r.text();
+      return json(r.status, {
+        error: "Google Drive download failed",
+        status: r.status,
+        details: text,
       });
     }
 
-    const meta = JSON.parse(metaText);
-    const mimeType: string = meta.mimeType || "application/octet-stream";
-    const name: string = meta.name || "file";
+    const buf = new Uint8Array(await r.arrayBuffer());
+    const base64 = toBase64(buf);
 
-    // 2) Download file bytes
-    // For normal files (pdf/image): alt=media works
-    // For Google Docs types: must export (not needed for your invoices usually)
-    let downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
-
-    const fileRes = await fetch(downloadUrl, {
-      headers: { Authorization: `Bearer ${providerToken}` },
-    });
-
-    if (!fileRes.ok) {
-      const errText = await fileRes.text();
-      return json(fileRes.status, {
-        error: "Drive download failed",
-        status: fileRes.status,
-        details: errText,
-      });
-    }
-
-    const buf = await fileRes.arrayBuffer();
-    const base64 = arrayBufferToBase64(buf);
-
-    return json(200, { base64, filename: name, mimeType });
+    return json(200, { base64 });
   } catch (e) {
-    return json(500, { error: "drive-download crashed", message: String(e?.message || e) });
+    return json(500, { error: "Unhandled error", message: String(e) });
   }
 });
