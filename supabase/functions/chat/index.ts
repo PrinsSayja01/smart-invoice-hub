@@ -8,11 +8,13 @@ const corsHeaders = {
 };
 
 type ChatBody = {
-  messages: Array<{ role: "user" | "assistant" | "system"; content: string }>;
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
 };
 
 function buildInvoiceContext(invoices: any[]) {
-  if (!invoices?.length) return "No invoices uploaded yet.";
+  if (!invoices?.length) {
+    return "No invoices uploaded yet. Ask the user to upload invoices first.";
+  }
 
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -26,10 +28,18 @@ function buildInvoiceContext(invoices: any[]) {
       if (new Date(inv.created_at) >= startOfMonth) acc.thisMonth++;
 
       const vendor = inv.vendor_name || "Unknown";
-      acc.vendors[vendor] = (acc.vendors[vendor] || 0) + (Number(inv.total_amount) || 0);
+      acc.vendors[vendor] =
+        (acc.vendors[vendor] || 0) + (Number(inv.total_amount) || 0);
       return acc;
     },
-    { total: 0, flagged: 0, compliant: 0, needsReview: 0, thisMonth: 0, vendors: {} as Record<string, number> }
+    {
+      total: 0,
+      flagged: 0,
+      compliant: 0,
+      needsReview: 0,
+      thisMonth: 0,
+      vendors: {} as Record<string, number>,
+    }
   );
 
   const topVendors = Object.entries(stats.vendors)
@@ -42,7 +52,7 @@ function buildInvoiceContext(invoices: any[]) {
     .slice(0, 5)
     .map(
       (inv) =>
-        `${inv.vendor_name || "Unknown"} - $${Number(inv.total_amount || 0).toLocaleString()} (${inv.compliance_status || "unknown"}, ${inv.risk_score || "unknown"} risk)`
+        `${inv.vendor_name || "Unknown"} - $${Number(inv.total_amount || 0).toLocaleString()} (${inv.compliance_status}, ${inv.risk_score} risk)`
     )
     .join("\n");
 
@@ -61,31 +71,32 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const body = (await req.json().catch(() => null)) as ChatBody | null;
-    const messages = body?.messages || [];
+    const { messages } = (await req.json()) as ChatBody;
 
     const HF_API_KEY = Deno.env.get("HF_API_KEY");
+    const HF_CHAT_MODEL = Deno.env.get("HF_CHAT_MODEL") || "google/gemma-2-2b-it";
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-    if (!HF_API_KEY) throw new Error("HF_API_KEY is not configured");
+    if (!HF_API_KEY) throw new Error("HF_API_KEY is not configured in Supabase secrets");
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
       throw new Error("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured");
     }
 
-    // ✅ Read user from JWT (sent from frontend)
-    let invoiceContext = "User not authenticated. Ask them to login.";
+    // --- Build invoice context if user is authenticated ---
+    let invoiceContext = "User not authenticated. Provide general help only.";
     const authHeader = req.headers.get("authorization");
 
-    if (authHeader) {
+    if (authHeader?.startsWith("Bearer ")) {
+      const token = authHeader.slice("Bearer ".length);
       const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-      const token = authHeader.replace("Bearer ", "");
+
       const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
 
       if (!userErr && userData?.user?.id) {
         const { data: invoices } = await supabaseAdmin
           .from("invoices")
-          .select("vendor_name,total_amount,compliance_status,risk_score,is_flagged,created_at,invoice_number")
+          .select("vendor_name, total_amount, compliance_status, risk_score, is_flagged, created_at, invoice_number")
           .eq("user_id", userData.user.id)
           .order("created_at", { ascending: false })
           .limit(50);
@@ -94,64 +105,65 @@ serve(async (req) => {
       }
     }
 
+    const userQuestion = messages?.slice(-1)?.[0]?.content || "Help me analyze my invoices.";
+
     const systemPrompt = `You are Invoice AI, a concise assistant for invoice analysis.
 Answer using the data below.
 
 ${invoiceContext}
 
 Rules:
-- Be brief and direct (2-4 sentences)
+- Be brief and direct (2-6 sentences)
 - If asked for totals, include $ and commas
 - If data is missing, say so briefly
 - No markdown, plain text.`;
 
-    // ✅ HF Router OpenAI-compatible endpoint
-    const HF_MODEL = Deno.env.get("HF_MODEL") || "HuggingFaceTB/SmolLM3-3B";
+    // --- Hugging Face Router (OpenAI compatible) ---
     const HF_URL = "https://router.huggingface.co/v1/chat/completions";
 
-    const hfRes = await fetch(HF_URL, {
+    const upstream = await fetch(HF_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${HF_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: HF_MODEL,
+        model: HF_CHAT_MODEL,
         stream: true,
         temperature: 0.2,
-        max_tokens: 350,
+        max_tokens: 250,
         messages: [
           { role: "system", content: systemPrompt },
-          ...messages.slice(-10).filter((m) => m.role !== "system"),
+          { role: "user", content: userQuestion },
         ],
       }),
     });
 
-    if (!hfRes.ok || !hfRes.body) {
-      const errText = await hfRes.text().catch(() => "");
+    // If HF fails, return JSON (your frontend will show error)
+    if (!upstream.ok || !upstream.body) {
+      const errText = await upstream.text().catch(() => "");
       return new Response(
         JSON.stringify({
           error: "Hugging Face request failed",
-          status: hfRes.status,
+          status: upstream.status,
           details: errText,
-          hint: "Try setting HF_MODEL=HuggingFaceTB/SmolLM3-3B (or another router-supported model).",
         }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // ✅ Proxy the streaming SSE directly to frontend
-    return new Response(hfRes.body, {
+    // Pass-through SSE stream to client
+    return new Response(upstream.body, {
       status: 200,
       headers: {
         ...corsHeaders,
         "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
+        "Cache-Control": "no-cache",
         Connection: "keep-alive",
       },
     });
-  } catch (error: any) {
-    return new Response(JSON.stringify({ error: error?.message || "Unknown error" }), {
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e?.message || "Unknown error" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
