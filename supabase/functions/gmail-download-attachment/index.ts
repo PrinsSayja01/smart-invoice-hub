@@ -1,54 +1,58 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+/// <reference lib="deno.ns" />
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-function toBase64UrlSafeToBase64(b64url: string) {
-  return b64url.replace(/-/g, "+").replace(/_/g, "/");
+function json(status: number, body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function base64UrlToBase64(b64url: string) {
+  // Gmail returns base64url
+  const pad = "=".repeat((4 - (b64url.length % 4)) % 4);
+  return b64url.replace(/-/g, "+").replace(/_/g, "/") + pad;
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const { providerToken, messageId, attachmentId, filename, mimeType } = body || {};
-
-    if (!providerToken || !messageId || !attachmentId) {
-      return new Response(JSON.stringify({ error: "Missing providerToken/messageId/attachmentId" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    const { providerToken, messageId, attachmentId, filename, mimeType } = await req.json();
+    if (!providerToken) return json(400, { error: "Missing providerToken" });
+    if (!messageId) return json(400, { error: "Missing messageId" });
+    if (!attachmentId) return json(400, { error: "Missing attachmentId" });
 
     const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`;
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${providerToken}` } });
 
-    const txt = await r.text();
+    const r = await fetch(url, {
+      headers: { Authorization: `Bearer ${providerToken}` },
+    });
+
+    const text = await r.text();
     if (!r.ok) {
-      return new Response(JSON.stringify({ error: "Gmail attachment download failed", status: r.status, details: txt }), {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      return json(r.status, {
+        error: "Gmail attachment download failed",
+        status: r.status,
+        details: text,
       });
     }
 
-    const json = JSON.parse(txt);
-    const data = json?.data;
-    if (!data) throw new Error("No attachment data returned");
+    const data = JSON.parse(text);
+    const base64 = base64UrlToBase64(data.data || "");
 
-    const base64 = toBase64UrlSafeToBase64(data);
-
-    return new Response(JSON.stringify({ base64, filename: filename || "attachment", mimeType: mimeType || "application/octet-stream" }), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return json(200, {
+      base64,
+      filename: filename || "attachment",
+      mimeType: mimeType || "application/octet-stream",
     });
-  } catch (e: any) {
-    return new Response(JSON.stringify({ error: e?.message || "Unknown error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  } catch (e) {
+    return json(500, { error: "Unhandled error", message: String(e) });
   }
 });
