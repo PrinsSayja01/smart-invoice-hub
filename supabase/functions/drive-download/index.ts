@@ -1,56 +1,73 @@
-/// <reference lib="deno.ns" />
+// supabase/functions/drive-download/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+function corsHeaders(origin?: string) {
+  return {
+    "Access-Control-Allow-Origin": origin ?? "*",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
 }
 
-function toBase64(bytes: Uint8Array) {
-  let bin = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
-  return btoa(bin);
+  return btoa(binary);
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  const origin = req.headers.get("origin") ?? "*";
+
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders(origin) });
+  }
 
   try {
     const { providerToken, fileId } = await req.json();
-    if (!providerToken) return json(400, { error: "Missing providerToken" });
-    if (!fileId) return json(400, { error: "Missing fileId" });
 
-    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    if (!providerToken || !fileId) {
+      return new Response(
+        JSON.stringify({ error: "Missing providerToken or fileId" }),
+        { status: 400, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+      );
+    }
 
-    const r = await fetch(url, {
+    // Download file bytes
+    const url = new URL(`https://www.googleapis.com/drive/v3/files/${fileId}`);
+    url.searchParams.set("alt", "media");
+    url.searchParams.set("supportsAllDrives", "true");
+
+    const res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
-    if (!r.ok) {
-      const text = await r.text();
-      return json(r.status, {
-        error: "Google Drive download failed",
-        status: r.status,
-        details: text,
-      });
+    if (!res.ok) {
+      const text = await res.text();
+      return new Response(
+        JSON.stringify({
+          error: "Drive download failed",
+          status: res.status,
+          details: text,
+        }),
+        { status: 200, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+      );
     }
 
-    const buf = new Uint8Array(await r.arrayBuffer());
-    const base64 = toBase64(buf);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    const base64 = bytesToBase64(buf);
 
-    return json(200, { base64 });
+    return new Response(
+      JSON.stringify({ base64 }),
+      { headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+    );
   } catch (e) {
-    return json(500, { error: "Unhandled error", message: String(e) });
+    return new Response(
+      JSON.stringify({ error: "drive-download failed", message: String(e?.message ?? e) }),
+      { status: 500, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+    );
   }
 });

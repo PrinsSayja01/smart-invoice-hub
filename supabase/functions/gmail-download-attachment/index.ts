@@ -1,58 +1,69 @@
-/// <reference lib="deno.ns" />
+// supabase/functions/gmail-download-attachment/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function json(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+function corsHeaders(origin?: string) {
+  return {
+    "Access-Control-Allow-Origin": origin ?? "*",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
 }
 
 function base64UrlToBase64(b64url: string) {
-  // Gmail returns base64url
-  const pad = "=".repeat((4 - (b64url.length % 4)) % 4);
-  return b64url.replace(/-/g, "+").replace(/_/g, "/") + pad;
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4;
+  return pad ? b64 + "=".repeat(4 - pad) : b64;
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  const origin = req.headers.get("origin") ?? "*";
+
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders(origin) });
+  }
 
   try {
     const { providerToken, messageId, attachmentId, filename, mimeType } = await req.json();
-    if (!providerToken) return json(400, { error: "Missing providerToken" });
-    if (!messageId) return json(400, { error: "Missing messageId" });
-    if (!attachmentId) return json(400, { error: "Missing attachmentId" });
+
+    if (!providerToken || !messageId || !attachmentId) {
+      return new Response(
+        JSON.stringify({ error: "Missing providerToken/messageId/attachmentId" }),
+        { status: 400, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+      );
+    }
 
     const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`;
-
-    const r = await fetch(url, {
+    const res = await fetch(url, {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
-    const text = await r.text();
-    if (!r.ok) {
-      return json(r.status, {
-        error: "Gmail attachment download failed",
-        status: r.status,
-        details: text,
-      });
+    const text = await res.text();
+    if (!res.ok) {
+      return new Response(
+        JSON.stringify({ error: "Gmail attachment download failed", status: res.status, details: text }),
+        { status: 200, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+      );
     }
 
-    const data = JSON.parse(text);
-    const base64 = base64UrlToBase64(data.data || "");
+    const json = JSON.parse(text);
+    const data = json.data; // base64url
+    if (!data) throw new Error("Missing attachment data");
 
-    return json(200, {
-      base64,
-      filename: filename || "attachment",
-      mimeType: mimeType || "application/octet-stream",
-    });
+    const base64 = base64UrlToBase64(data);
+
+    return new Response(
+      JSON.stringify({
+        base64,
+        filename: filename || "attachment",
+        mimeType: mimeType || "application/octet-stream",
+      }),
+      { headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+    );
   } catch (e) {
-    return json(500, { error: "Unhandled error", message: String(e) });
+    return new Response(
+      JSON.stringify({ error: "gmail-download-attachment failed", message: String(e?.message ?? e) }),
+      { status: 500, headers: { ...corsHeaders(origin), "Content-Type": "application/json" } },
+    );
   }
 });
