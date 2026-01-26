@@ -3,7 +3,6 @@ import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
@@ -37,7 +36,6 @@ const SUGGESTED_QUESTIONS = [
   { icon: HelpCircle, text: "Compliance summary", color: "text-purple-500" },
 ];
 
-// Edge Function URL (same as your current approach)
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
 
 export default function Chat() {
@@ -49,9 +47,9 @@ export default function Chat() {
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const chatBodyRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (user) loadChatHistory();
@@ -60,10 +58,9 @@ export default function Chat() {
   }, [user]);
 
   useEffect(() => {
-    // Scroll to bottom when messages change
-    const el = scrollRef.current;
+    const el = chatBodyRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   const loadChatHistory = async () => {
@@ -96,13 +93,12 @@ export default function Chat() {
     const { error } = await supabase.from("chat_messages").delete().eq("user_id", user.id);
 
     if (error) {
-      // This usually happens if RLS has no DELETE policy
       toast({
         variant: "destructive",
         title: "Cannot clear chat",
         description:
           error.message +
-          " — Fix: add a DELETE policy for chat_messages (I included SQL below).",
+          " — If this says permission denied, add DELETE policy for chat_messages (SQL below).",
       });
       return;
     }
@@ -126,27 +122,23 @@ export default function Chat() {
       setInput("");
       setLoading(true);
 
-      // Abort any previous pending request
       abortRef.current?.abort();
       abortRef.current = new AbortController();
 
       const assistantId = crypto.randomUUID();
-      const assistantPlaceholder: Message = {
-        id: assistantId,
-        role: "assistant",
-        content: "",
-        created_at: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, assistantPlaceholder]);
+      setMessages((prev) => [
+        ...prev,
+        { id: assistantId, role: "assistant", content: "", created_at: new Date().toISOString() },
+      ]);
 
       try {
-        // Save user message (fire & forget)
+        // Save user message (no await)
         supabase
           .from("chat_messages")
           .insert({ user_id: user.id, role: "user", content: userMessage.content })
           .then();
 
-        // IMPORTANT: send real user JWT (not publishable key)
+        // ✅ Use real JWT
         const { data: sessionData } = await supabase.auth.getSession();
         const jwt = sessionData.session?.access_token;
 
@@ -154,10 +146,7 @@ export default function Chat() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            // Supabase Edge Functions expect JWT here when verify_jwt is ON.
-            // Even if you deployed with --no-verify-jwt, this is still fine.
             ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
-            // Always include apikey for gateway
             apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
           },
           body: JSON.stringify({
@@ -170,35 +159,29 @@ export default function Chat() {
         });
 
         if (!response.ok) {
-          const text = await response.text();
-          throw new Error(`Chat request failed (${response.status}). ${text}`);
+          const t = await response.text().catch(() => "");
+          throw new Error(`Chat request failed (${response.status}). ${t}`);
         }
 
-        const contentType = response.headers.get("content-type") || "";
+        const ct = response.headers.get("content-type") || "";
 
-        // ✅ Case A: Edge Function returns JSON { answer: "..." }
-        if (contentType.includes("application/json")) {
+        // ✅ If JSON { answer }
+        if (ct.includes("application/json")) {
           const json = await response.json();
-          const answer = (json?.answer || "").toString().trim();
+          const answer = (json?.answer || "").toString().trim() || "No answer returned.";
 
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantId ? { ...m, content: answer || "No answer returned." } : m))
-          );
+          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: answer } : m)));
 
-          if (answer) {
-            supabase.from("chat_messages").insert({
-              user_id: user.id,
-              role: "assistant",
-              content: answer,
-            }).then();
-          }
+          supabase
+            .from("chat_messages")
+            .insert({ user_id: user.id, role: "assistant", content: answer })
+            .then();
 
           return;
         }
 
-        // ✅ Case B: Streaming SSE (text/event-stream) with `data: {...}\n`
+        // ✅ If SSE stream
         if (!response.body) throw new Error("No response body");
-
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
 
@@ -211,53 +194,50 @@ export default function Chat() {
 
           buffer += decoder.decode(value, { stream: true });
 
-          let newlineIdx: number;
-          while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
-            let line = buffer.slice(0, newlineIdx);
-            buffer = buffer.slice(newlineIdx + 1);
+          let idx: number;
+          while ((idx = buffer.indexOf("\n")) !== -1) {
+            let line = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 1);
 
             if (line.endsWith("\r")) line = line.slice(0, -1);
             if (!line.startsWith("data: ")) continue;
 
-            const jsonStr = line.slice(6).trim();
-            if (jsonStr === "[DONE]") break;
+            const payload = line.slice(6).trim();
+            if (payload === "[DONE]") break;
 
             try {
-              const delta = JSON.parse(jsonStr)?.choices?.[0]?.delta?.content;
+              const delta = JSON.parse(payload)?.choices?.[0]?.delta?.content;
               if (delta) {
                 content += delta;
-                setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content } : m)));
+                setMessages((prev) =>
+                  prev.map((m) => (m.id === assistantId ? { ...m, content } : m))
+                );
               }
             } catch {
-              // ignore partial chunk
+              // ignore partial chunks
             }
           }
         }
 
-        const finalAnswer = content.trim();
-        if (finalAnswer) {
-          supabase
-            .from("chat_messages")
-            .insert({ user_id: user.id, role: "assistant", content: finalAnswer })
-            .then();
-        } else {
-          // If stream ended but no content, show something so UI doesn't look stuck
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: "No answer returned. Try again." } : m
-            )
-          );
-        }
-      } catch (error: any) {
-        if (error?.name === "AbortError") return;
+        const finalAnswer = content.trim() || "No answer returned. Try again.";
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantId ? { ...m, content: finalAnswer } : m))
+        );
+
+        supabase
+          .from("chat_messages")
+          .insert({ user_id: user.id, role: "assistant", content: finalAnswer })
+          .then();
+      } catch (err: any) {
+        if (err?.name === "AbortError") return;
 
         toast({
           variant: "destructive",
           title: "Chat error",
-          description: error?.message || "Failed to send message",
+          description: err?.message || "Failed to send message",
         });
 
-        // Remove the empty assistant placeholder if it never got content
+        // remove empty assistant bubble
         setMessages((prev) => prev.filter((m) => !(m.id === assistantId && !m.content)));
       } finally {
         setLoading(false);
@@ -290,7 +270,8 @@ export default function Chat() {
         {/* Chat Area */}
         <Card className="flex-1 flex flex-col overflow-hidden shadow-xl border-0 bg-card/50 backdrop-blur-sm">
           <CardContent className="flex-1 flex flex-col p-0">
-            <ScrollArea className="flex-1 p-4 md:p-6" ref={scrollRef}>
+            {/* ✅ IMPORTANT: normal scroll div (fixes input blocking) */}
+            <div ref={chatBodyRef} className="flex-1 overflow-y-auto p-4 md:p-6">
               {loadingHistory ? (
                 <div className="flex flex-col items-center justify-center h-full gap-3">
                   <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -385,7 +366,7 @@ export default function Chat() {
                   ))}
                 </div>
               )}
-            </ScrollArea>
+            </div>
 
             {/* Input Area */}
             <div className="p-4 md:p-6 border-t border-border bg-background/80 backdrop-blur-sm">
@@ -404,14 +385,12 @@ export default function Chat() {
               )}
 
               <form onSubmit={handleSubmit} className="flex gap-3">
-                <div className="flex-1 relative">
+                <div className="flex-1 relative z-10 pointer-events-auto">
                   <Input
                     ref={inputRef}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask anything about your invoices..."
-                    // ✅ Important: allow typing even while loading
-                    disabled={false}
                     className="pr-12 py-6 text-base rounded-xl border-2 border-border focus:border-primary transition-colors"
                   />
                 </div>
