@@ -1,31 +1,31 @@
-// supabase/functions/drive-list/index.ts
+/// <reference lib="deno.ns" />
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { corsHeaders, handleCors } from "../_shared/cors.ts";
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
 
 serve(async (req) => {
-  // ✅ CORS preflight FIX
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
+  const cors = handleCors(req);
+  if (cors) return cors;
 
   try {
-    const { providerToken } = await req.json();
-
-    if (!providerToken) {
-      return new Response(
-        JSON.stringify({ error: "Missing providerToken" }),
-        { status: 401, headers: corsHeaders }
-      );
+    if (req.method !== "POST") {
+      return json({ error: "Method not allowed" }, 405);
     }
 
-    // ✅ Drive Query (PDF + Images)
+    const body = await req.json().catch(() => ({}));
+    const providerToken = body?.providerToken as string | undefined;
+
+    if (!providerToken) {
+      return json({ error: "Missing providerToken" }, 400);
+    }
+
+    // PDFs + Images (Drive)
     const q =
       "(mimeType='application/pdf' or mimeType contains 'image/') and trashed=false";
 
@@ -33,43 +33,36 @@ serve(async (req) => {
     url.searchParams.set("q", q);
     url.searchParams.set(
       "fields",
-      "files(id,name,mimeType,size,modifiedTime),nextPageToken"
+      "files(id,name,mimeType,size,modifiedTime),nextPageToken",
     );
-    url.searchParams.set("pageSize", "50");
+    url.searchParams.set("pageSize", "100");
     url.searchParams.set("orderBy", "modifiedTime desc");
 
-    // ✅ Shared Drives FIX
+    // IMPORTANT: Shared Drives support
     url.searchParams.set("supportsAllDrives", "true");
     url.searchParams.set("includeItemsFromAllDrives", "true");
     url.searchParams.set("corpora", "allDrives");
 
-    const r = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${providerToken}`,
-      },
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${providerToken}` },
     });
 
-    const data = await r.json();
+    const text = await res.text();
 
-    if (!r.ok) {
-      return new Response(
-        JSON.stringify({
+    if (!res.ok) {
+      return json(
+        {
           error: "Google Drive API failed",
-          status: r.status,
-          details: data,
-        }),
-        { status: 500, headers: corsHeaders }
+          status: res.status,
+          details: text,
+        },
+        500,
       );
     }
 
-    return new Response(JSON.stringify({ files: data.files || [] }), {
-      status: 200,
-      headers: corsHeaders,
-    });
-  } catch (err) {
-    return new Response(
-      JSON.stringify({ error: err.message || "Drive list error" }),
-      { status: 500, headers: corsHeaders }
-    );
+    const data = JSON.parse(text);
+    return json({ files: data.files ?? [] });
+  } catch (e) {
+    return json({ error: "drive-list crashed", message: String(e) }, 500);
   }
 });
