@@ -64,9 +64,9 @@ const corsSafeError = (err: any) => {
   return String(msg);
 };
 
-const isValidFileType = (file: File) => {
+const isValidInvoiceFileType = (f: File) => {
   const validTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
-  return validTypes.includes(file.type);
+  return validTypes.includes(f.type);
 };
 
 function safeNum(x: string) {
@@ -137,11 +137,13 @@ function extractHeuristic(text: string, fileName: string): ExtractedData {
   const invoice_date = normalizeDate(dateRaw);
 
   const taxRaw =
-    t.match(/\b(vat|tax)\s*(amount)?\s*[:\-]?\s*([$€£]?\s*[0-9][0-9.,]+)/i)?.[3] || '';
+    t.match(/\b(vat|tax)\s*(amount)?\s*[:\-]?\s*([$€£]?\s*[0-9][0-9.,]+)/i)?.[3] ||
+    '';
   const tax_amount = taxRaw ? String(safeNum(taxRaw) ?? '') : '';
 
   const totalRaw =
-    t.match(/\b(total\s*(amount)?|grand\s*total|amount\s*due)\s*[:\-]?\s*([$€£]?\s*[0-9][0-9.,]+)/i)?.[3] || '';
+    t.match(/\b(total\s*(amount)?|grand\s*total|amount\s*due)\s*[:\-]?\s*([$€£]?\s*[0-9][0-9.,]+)/i)?.[3] ||
+    '';
   let total = totalRaw ? safeNum(totalRaw) : null;
 
   if (!total) {
@@ -163,10 +165,24 @@ function extractHeuristic(text: string, fileName: string): ExtractedData {
   };
 }
 
+// ✅ ALWAYS invoke edge function with Supabase JWT (fixes 401 Invalid JWT)
+async function invokeEdge(fnName: string, body: any) {
+  const { data } = await supabase.auth.getSession();
+  const accessToken = data.session?.access_token;
+
+  return supabase.functions.invoke(fnName, {
+    body,
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+  });
+}
+
 export default function UploadInvoice() {
-  // Supabase session + provider token (Google)
   const [session, setSession] = useState<any>(null);
-  const [providerToken, setProviderToken] = useState<string | null>(null);
+
+  // providerToken can disappear later in some refresh cases → keep a copy in localStorage
+  const [providerToken, setProviderToken] = useState<string | null>(() => {
+    return localStorage.getItem('google_provider_token') || null;
+  });
 
   useEffect(() => {
     let mounted = true;
@@ -175,14 +191,24 @@ export default function UploadInvoice() {
       const { data } = await supabase.auth.getSession();
       if (!mounted) return;
       setSession(data.session || null);
-      setProviderToken(data.session?.provider_token || null);
+
+      const pt = data.session?.provider_token || null;
+      if (pt) {
+        setProviderToken(pt);
+        localStorage.setItem('google_provider_token', pt);
+      }
     };
 
     load();
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession || null);
-      setProviderToken(newSession?.provider_token || null);
+
+      const pt = newSession?.provider_token || null;
+      if (pt) {
+        setProviderToken(pt);
+        localStorage.setItem('google_provider_token', pt);
+      }
     });
 
     return () => {
@@ -217,27 +243,14 @@ export default function UploadInvoice() {
   const isAuthenticated = !!session?.user;
   const userEmail = session?.user?.email || '';
 
-  // IMPORTANT: robust invoke that always attaches Supabase JWT
-  const invokeEdge = useCallback(async (fnName: string, body: any) => {
-    const { data } = await supabase.auth.getSession();
-    const jwt = data.session?.access_token;
-
-    // If jwt missing, function will likely fail if verify_jwt ON
-    const { data: out, error } = await supabase.functions.invoke(fnName, {
-      body,
-      headers: jwt ? { Authorization: `Bearer ${jwt}` } : undefined,
-    });
-
-    if (error) {
-      const extra = (error as any)?.context ? `\n\nDetails:\n${JSON.stringify((error as any).context, null, 2)}` : '';
-      throw new Error(`${fnName} failed. ${error.message}${extra}`);
-    }
-    return out;
-  }, []);
-
-  // Google Login (force account chooser + consent)
+  // ✅ Google Login (force account chooser + consent)
   const handleGoogleSignIn = async () => {
-    const redirectTo = window.location.origin + '/invoice-upload';
+    const redirectTo = window.location.origin + '/dashboard/upload';
+
+    // IMPORTANT: signOut first so google doesn't silently reuse old session
+    try {
+      await supabase.auth.signOut();
+    } catch {}
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
@@ -247,7 +260,8 @@ export default function UploadInvoice() {
           'openid email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly',
         queryParams: {
           access_type: 'offline',
-          prompt: 'select_account consent', // chooser + always show consent when needed
+          prompt: 'consent select_account',
+          include_granted_scopes: 'true',
         },
       },
     });
@@ -258,51 +272,18 @@ export default function UploadInvoice() {
   const handleSignOut = async () => {
     try {
       await supabase.auth.signOut();
-      setDriveFiles([]);
-      setSelectedDriveFile(null);
-      setExtractedData(null);
-      setGmailMessages([]);
-      setSelectedGmailMsg(null);
-      setSelectedGmailAttachmentId(null);
-      setFile(null);
-      setExtractedText('');
-    } catch (e: any) {
-      console.error(e);
-      alert('Logout failed');
-    }
-  };
-
-  // Drag/Drop
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const droppedFile = e.dataTransfer.files[0];
-    if (droppedFile && isValidFileType(droppedFile)) {
-      setFile(droppedFile);
-      setExtractedData(null);
-    } else {
-      alert('Invalid file. Only PDF, JPG, PNG allowed.');
-    }
-  }, []);
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = e.target.files?.[0];
-    if (selected && isValidFileType(selected)) {
-      setFile(selected);
-      setExtractedData(null);
-    } else {
-      alert('Invalid file. Only PDF, JPG, PNG allowed.');
-    }
+    } catch {}
+    setDriveFiles([]);
+    setSelectedDriveFile(null);
+    setExtractedData(null);
+    setGmailMessages([]);
+    setSelectedGmailMsg(null);
+    setSelectedGmailAttachmentId(null);
+    setFile(null);
+    setExtractedText('');
+    setOcrProgress(0);
+    setProviderToken(null);
+    localStorage.removeItem('google_provider_token');
   };
 
   const loadLibraries = useCallback(async () => {
@@ -314,7 +295,7 @@ export default function UploadInvoice() {
         await new Promise((resolve, reject) => {
           script.onload = resolve;
           script.onerror = () => reject(new Error('Failed to load Tesseract.js'));
-          setTimeout(() => reject(new Error('Tesseract.js load timeout')), 10000);
+          setTimeout(() => reject(new Error('Tesseract.js load timeout')), 15000);
         });
       }
 
@@ -329,7 +310,7 @@ export default function UploadInvoice() {
             resolve(null);
           };
           script.onerror = () => reject(new Error('Failed to load PDF.js'));
-          setTimeout(() => reject(new Error('PDF.js load timeout')), 10000);
+          setTimeout(() => reject(new Error('PDF.js load timeout')), 15000);
         });
       }
 
@@ -344,8 +325,8 @@ export default function UploadInvoice() {
     setOcrProgress(10);
     const arrayBuffer = await f.arrayBuffer();
     const pdfjsLib = (window as any).pdfjsLib;
-
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
     let fullText = '';
 
     if (!canvasRef.current) canvasRef.current = document.createElement('canvas');
@@ -353,10 +334,10 @@ export default function UploadInvoice() {
     const context = canvas.getContext('2d');
     if (!context) throw new Error('Canvas context not available');
 
-    const maxPages = Math.min(pdf.numPages, 3);
+    const pagesToRead = Math.min(pdf.numPages, 3);
 
-    for (let i = 1; i <= maxPages; i++) {
-      setOcrProgress(10 + Math.round((i / maxPages) * 40));
+    for (let i = 1; i <= pagesToRead; i++) {
+      setOcrProgress(10 + Math.round((i / pagesToRead) * 40));
 
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
@@ -392,7 +373,9 @@ export default function UploadInvoice() {
         try {
           setOcrProgress(10);
 
-          if (!(window as any).Tesseract) throw new Error('Tesseract library not loaded');
+          if (!(window as any).Tesseract) {
+            throw new Error('Tesseract library not loaded');
+          }
 
           if (!workerRef.current) {
             workerRef.current = await (window as any).Tesseract.createWorker('eng', 1, {
@@ -432,6 +415,41 @@ export default function UploadInvoice() {
     setOcrProgress(0);
     setSelectedGmailMsg(null);
     setSelectedGmailAttachmentId(null);
+  };
+
+  // ---------------------------
+  // Drag/Drop
+  // ---------------------------
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const droppedFile = e.dataTransfer.files[0];
+    if (droppedFile && isValidInvoiceFileType(droppedFile)) {
+      setFile(droppedFile);
+      setExtractedData(null);
+    } else {
+      alert('Invalid file. Only PDF, JPG, PNG allowed.');
+    }
+  }, []);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0];
+    if (selected && isValidInvoiceFileType(selected)) {
+      setFile(selected);
+      setExtractedData(null);
+    } else {
+      alert('Invalid file. Only PDF, JPG, PNG allowed.');
+    }
   };
 
   const processInvoice = async () => {
@@ -474,34 +492,45 @@ export default function UploadInvoice() {
       alert('Invoice processed successfully!');
     } catch (error: any) {
       console.error('Error processing invoice:', error);
-      setProcessingSteps((prev) => prev.map((s) => (s.status === 'processing' ? { ...s, status: 'error' } : s)));
-      alert(`Processing failed: ${error?.message || 'Unknown error'}`);
+      setProcessingSteps((prev) =>
+        prev.map((s) => (s.status === 'processing' ? { ...s, status: 'error' } : s)),
+      );
+      alert(`Processing failed: ${corsSafeError(error)}`);
     } finally {
       setUploading(false);
       setProcessing(false);
     }
   };
 
-  // DRIVE list via Edge Function
+  // ✅ DRIVE list via Edge Function (JWT + providerToken)
   const fetchDriveFiles = async () => {
+    if (!isAuthenticated) {
+      alert('Please login first.');
+      return;
+    }
     if (!providerToken) {
-      alert('Google token missing. Logout and login again with Drive permission.');
+      alert('Google provider token missing. Click "Use another account" and login again with consent.');
       return;
     }
 
     try {
       setUploading(true);
 
-      // IMPORTANT: JWT attached by invokeEdge
-      const data = await invokeEdge('drive-list', { providerToken });
+      const { data, error } = await invokeEdge('drive-list', {
+        providerToken,
+        // helpful if your files are in shared drives (your edge function must use these flags)
+        supportAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: 'user',
+        pageSize: 50,
+      });
 
-      // Accept both formats:
-      // (A) { files: [...] }
-      // (B) { ...googleResponse, files: [...] }
-      const filesArr: any[] =
-        Array.isArray(data?.files) ? data.files : Array.isArray(data?.files?.files) ? data.files.files : [];
+      if (error) throw error;
 
-      const finalFiles: DriveFile[] = filesArr.map((f: any) => ({
+      const raw = data?.files?.files || data?.files || data?.files?.items || data?.items || [];
+      const list = Array.isArray(raw) ? raw : [];
+
+      const finalFiles: DriveFile[] = list.map((f: any) => ({
         id: f.id,
         name: f.name,
         mimeType: f.mimeType,
@@ -513,22 +542,33 @@ export default function UploadInvoice() {
 
       if (finalFiles.length === 0) {
         alert(
-          'No PDF or image files found in your Google Drive.\n\nIf your invoices are inside a Shared Drive, your drive-list function must use supportsAllDrives/includeItemsFromAllDrives.',
+          'No PDF or image files found.\n\nIf your files are in Shared Drive, your edge function must use supportAllDrives + includeItemsFromAllDrives.\n\nAlso confirm you re-consented to Drive scope.',
         );
       }
-    } catch (error: any) {
-      console.error('Drive fetch error:', error);
-      alert(`Error fetching files: ${error?.message || 'Unknown error'}`);
+    } catch (e: any) {
+      console.error('Drive fetch error:', e);
+      const msg = corsSafeError(e);
+      // special hint for Invalid JWT
+      if (msg.toLowerCase().includes('invalid jwt') || msg.includes('401')) {
+        alert(
+          `Drive error: ${msg}\n\nFix:\n1) Logout\n2) Google Security → Third-party access → remove the app\n3) Login again (consent + select account)`,
+        );
+      } else {
+        alert(`Error fetching files: ${msg}`);
+      }
     } finally {
       setUploading(false);
     }
   };
 
-  // DRIVE download via Edge Function
   const processSelectedDriveFile = async () => {
     if (!selectedDriveFile) return;
+    if (!isAuthenticated) {
+      alert('Please login first.');
+      return;
+    }
     if (!providerToken) {
-      alert('Google token missing. Logout and login again with Drive permission.');
+      alert('Google provider token missing. Click "Use another account" and login again with consent.');
       return;
     }
 
@@ -547,8 +587,12 @@ export default function UploadInvoice() {
       const fileMetadata = driveFiles.find((f) => f.id === selectedDriveFile);
       if (!fileMetadata) throw new Error('Selected file not found');
 
-      const data = await invokeEdge('drive-download', { providerToken, fileId: selectedDriveFile });
+      const { data, error } = await invokeEdge('drive-download', {
+        providerToken,
+        fileId: selectedDriveFile,
+      });
 
+      if (error) throw error;
       if (!data?.base64) throw new Error('Drive download failed: missing base64');
 
       const bytes = Uint8Array.from(atob(data.base64), (c) => c.charCodeAt(0));
@@ -586,46 +630,71 @@ export default function UploadInvoice() {
 
       setExtractedData(aiExtractedData);
       alert('Invoice processed successfully from Google Drive!');
-    } catch (error: any) {
-      console.error('Drive processing error:', error);
-      setProcessingSteps((prev) => prev.map((s) => (s.status === 'processing' ? { ...s, status: 'error' } : s)));
-      alert(`Drive processing failed: ${error?.message || 'Unknown error'}`);
+    } catch (e: any) {
+      console.error('Processing error:', e);
+      setProcessingSteps((prev) =>
+        prev.map((s) => (s.status === 'processing' ? { ...s, status: 'error' } : s)),
+      );
+      alert(`Error: ${corsSafeError(e)}`);
     } finally {
       setUploading(false);
       setProcessing(false);
     }
   };
 
-  // GMAIL list via Edge Function (last 90 days)
+  // ✅ GMAIL list via Edge Function (last 90 days)
   const fetchGmailInvoices = async () => {
+    if (!isAuthenticated) {
+      alert('Please login first.');
+      return;
+    }
     if (!providerToken) {
-      alert('Google token missing. Logout and login again with Gmail permission.');
+      alert('Google provider token missing. Click "Use another account" and login again with consent.');
       return;
     }
 
     try {
       setGmailLoading(true);
 
-      const data = await invokeEdge('gmail-list', { providerToken, maxResults: 20 });
+      const { data, error } = await invokeEdge('gmail-list', {
+        providerToken,
+        // Let your edge function use this to build a query like: newer_than:90d has:attachment (filename:pdf OR filename:jpg OR filename:png)
+        newerThanDays: 90,
+        maxResults: 20,
+      });
 
-      const msgs: GmailMessage[] = Array.isArray(data?.messages) ? data.messages : [];
+      if (error) throw error;
+
+      const msgs: GmailMessage[] = data?.messages || [];
       setGmailMessages(msgs);
 
       if (!msgs.length) {
-        alert('No invoice attachments found in Gmail (last 90 days).');
+        alert(
+          'No invoice attachments found in Gmail (last 90 days).\n\nTip: make sure your edge function searches has:attachment filename:pdf OR filename:jpg OR filename:png',
+        );
       }
     } catch (e: any) {
       console.error('Gmail list error:', e);
-      alert(`Gmail error: ${e?.message || 'Unknown error'}`);
+      const msg = corsSafeError(e);
+      if (msg.toLowerCase().includes('invalid jwt') || msg.includes('401')) {
+        alert(
+          `Gmail error: ${msg}\n\nFix:\n1) Logout\n2) Google Security → Third-party access → remove the app\n3) Login again (consent + select account)`,
+        );
+      } else {
+        alert(`Gmail error: ${msg}`);
+      }
     } finally {
       setGmailLoading(false);
     }
   };
 
-  // GMAIL download + process
   const processSelectedGmailAttachment = async () => {
+    if (!isAuthenticated) {
+      alert('Please login first.');
+      return;
+    }
     if (!providerToken) {
-      alert('Google token missing. Logout and login again with Gmail permission.');
+      alert('Google provider token missing. Click "Use another account" and login again with consent.');
       return;
     }
     if (!selectedGmailMsg || !selectedGmailAttachmentId) {
@@ -650,7 +719,7 @@ export default function UploadInvoice() {
     ]);
 
     try {
-      const data = await invokeEdge('gmail-download-attachment', {
+      const { data, error } = await invokeEdge('gmail-download-attachment', {
         providerToken,
         messageId: msg.id,
         attachmentId: att.attachmentId,
@@ -658,6 +727,7 @@ export default function UploadInvoice() {
         mimeType: att.mimeType,
       });
 
+      if (error) throw error;
       if (!data?.base64) throw new Error('Gmail download failed: missing base64');
 
       const bytes = Uint8Array.from(atob(data.base64), (c) => c.charCodeAt(0));
@@ -699,8 +769,10 @@ export default function UploadInvoice() {
       alert('Invoice processed successfully from Gmail!');
     } catch (e: any) {
       console.error(e);
-      setProcessingSteps((prev) => prev.map((s) => (s.status === 'processing' ? { ...s, status: 'error' } : s)));
-      alert(`Gmail processing failed: ${e?.message || 'Unknown error'}`);
+      setProcessingSteps((prev) =>
+        prev.map((s) => (s.status === 'processing' ? { ...s, status: 'error' } : s)),
+      );
+      alert(`Gmail processing failed: ${corsSafeError(e)}`);
     } finally {
       setUploading(false);
       setProcessing(false);
@@ -711,7 +783,7 @@ export default function UploadInvoice() {
     if (extractedData) setExtractedData({ ...extractedData, [field]: value });
   };
 
-  // Save: upload to Storage + insert row
+  // ✅ Save: upload to Storage + insert row (file_url + file_type always set)
   const saveInvoice = async () => {
     try {
       if (!isAuthenticated) {
@@ -735,15 +807,12 @@ export default function UploadInvoice() {
       });
 
       if (uploadRes.error) {
-        if (uploadRes.error.message?.toLowerCase().includes('bucket')) {
-          throw new Error('Storage bucket "invoices" not found. Create it in Supabase Storage first.');
-        }
         throw uploadRes.error;
       }
 
       const publicUrl = supabase.storage.from('invoices').getPublicUrl(storagePath)?.data?.publicUrl || null;
 
-      const basePayload: any = {
+      const payload: any = {
         user_id: userId,
         file_name: file.name,
         vendor_name: extractedData.vendor_name || null,
@@ -752,32 +821,20 @@ export default function UploadInvoice() {
         total_amount: extractedData.total_amount ? Number(extractedData.total_amount) : null,
         tax_amount: extractedData.tax_amount ? Number(extractedData.tax_amount) : null,
         currency: extractedData.currency || null,
-      };
 
-      const payloadWithStorage: any = {
-        ...basePayload,
         storage_path: storagePath,
-        file_url: publicUrl,
-        file_type: file.type,
+        file_url: publicUrl, // ✅ prevents NOT NULL error
+        file_type: file.type, // ✅ prevents NOT NULL error
       };
 
-      let insErr: any = null;
-
-      const ins1 = await supabase.from('invoices').insert(payloadWithStorage);
-      insErr = ins1.error;
-
-      if (insErr && /column .* does not exist/i.test(insErr.message || '')) {
-        const ins2 = await supabase.from('invoices').insert(basePayload);
-        insErr = ins2.error;
-      }
-
+      const { error: insErr } = await supabase.from('invoices').insert(payload);
       if (insErr) throw insErr;
 
       alert('Invoice saved successfully!');
       resetForm();
     } catch (e: any) {
       console.error(e);
-      alert(`Save failed: ${e?.message || 'Unknown error'}`);
+      alert(`Save failed: ${corsSafeError(e)}`);
     } finally {
       setUploading(false);
     }
@@ -890,7 +947,11 @@ export default function UploadInvoice() {
 
                 {file && !extractedData && (
                   <div className="mt-6">
-                    <Button className="w-full bg-blue-600 hover:bg-blue-700" onClick={processInvoice} disabled={uploading || processing}>
+                    <Button
+                      className="w-full bg-blue-600 hover:bg-blue-700"
+                      onClick={processInvoice}
+                      disabled={uploading || processing}
+                    >
                       {uploading || processing ? (
                         <>
                           <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -928,15 +989,15 @@ export default function UploadInvoice() {
                       <LogIn className="h-4 w-4 mr-2" />
                       Sign in with Google
                     </Button>
-                    <p className="text-xs text-gray-500 mt-4">
-                      You will be able to browse and select invoice files from your Google Drive
-                    </p>
                   </div>
                 ) : (
                   <>
                     <Alert>
                       <AlertDescription>
                         Logged in as: <strong>{userEmail}</strong>
+                        <div className="text-xs text-gray-500 mt-1">
+                          Provider token: <strong>{providerToken ? 'available' : 'missing'}</strong>
+                        </div>
                       </AlertDescription>
                     </Alert>
 
@@ -955,6 +1016,13 @@ export default function UploadInvoice() {
                             </>
                           )}
                         </Button>
+
+                        <div className="mt-3">
+                          <Button variant="outline" onClick={handleGoogleSignIn}>
+                            Use another account
+                          </Button>
+                        </div>
+
                         <p className="text-xs text-gray-500 mt-3">Click to load your PDF and image files from Google Drive</p>
                       </div>
                     ) : (
@@ -966,6 +1034,7 @@ export default function UploadInvoice() {
                             Refresh
                           </Button>
                         </div>
+
                         <div className="border rounded-lg max-h-64 overflow-y-auto">
                           {driveFiles.map((f) => (
                             <div
@@ -984,7 +1053,7 @@ export default function UploadInvoice() {
                                 <div className="flex-1 min-w-0">
                                   <p className="text-sm font-medium truncate">{f.name}</p>
                                   <p className="text-xs text-gray-500">
-                                    {f.modifiedTime ? new Date(f.modifiedTime).toLocaleDateString() : ''}{' '}
+                                    {f.modifiedTime ? new Date(f.modifiedTime).toLocaleDateString() : ''}
                                     {f.size ? ` • ${(Number(f.size) / 1024).toFixed(0)} KB` : ''}
                                   </p>
                                 </div>
@@ -1045,6 +1114,9 @@ export default function UploadInvoice() {
                     <Alert>
                       <AlertDescription>
                         Connected to: <strong>{userEmail}</strong>
+                        <div className="text-xs text-gray-500 mt-1">
+                          Provider token: <strong>{providerToken ? 'available' : 'missing'}</strong>
+                        </div>
                       </AlertDescription>
                     </Alert>
 
@@ -1096,9 +1168,7 @@ export default function UploadInvoice() {
                                       setSelectedGmailAttachmentId(a.attachmentId);
                                     }}
                                     className={`text-xs p-2 rounded border cursor-pointer ${
-                                      selectedGmailAttachmentId === a.attachmentId
-                                        ? 'bg-blue-100 border-blue-300'
-                                        : 'bg-white hover:bg-gray-50'
+                                      selectedGmailAttachmentId === a.attachmentId ? 'bg-blue-100 border-blue-300' : 'bg-white hover:bg-gray-50'
                                     }`}
                                   >
                                     {a.filename} ({a.mimeType})
@@ -1148,7 +1218,6 @@ export default function UploadInvoice() {
                   {step.status === 'processing' && <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />}
                   {step.status === 'complete' && <CheckCircle2 className="h-5 w-5 text-green-600" />}
                   {step.status === 'error' && <AlertCircle className="h-5 w-5 text-red-600" />}
-
                   <span
                     className={`text-sm ${
                       step.status === 'pending'
@@ -1221,7 +1290,13 @@ export default function UploadInvoice() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="tax_amount">Tax/VAT Amount</Label>
-                  <Input id="tax_amount" type="number" step="0.01" value={extractedData.tax_amount} onChange={(e) => handleInputChange('tax_amount', e.target.value)} />
+                  <Input
+                    id="tax_amount"
+                    type="number"
+                    step="0.01"
+                    value={extractedData.tax_amount}
+                    onChange={(e) => handleInputChange('tax_amount', e.target.value)}
+                  />
                 </div>
               </div>
 
