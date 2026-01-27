@@ -1,52 +1,51 @@
-/// <reference lib="deno.ns" />
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { corsHeaders, handleCors } from "../_shared/cors.ts";
+import { corsHeaders } from "../_shared/cors.ts";
 
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
-
-function toBase64(bytes: Uint8Array) {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
-serve(async (req) => {
-  const cors = handleCors(req);
-  if (cors) return cors;
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-
-    const body = await req.json().catch(() => ({}));
-    const providerToken = body?.providerToken as string | undefined;
-    const fileId = body?.fileId as string | undefined;
-
-    if (!providerToken || !fileId) {
-      return json({ error: "Missing providerToken or fileId" }, 400);
+    const auth = req.headers.get("authorization");
+    if (!auth) {
+      return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`;
+    const { providerToken, fileId } = await req.json();
+    if (!providerToken || !fileId) {
+      return new Response(JSON.stringify({ error: "Missing providerToken or fileId" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-    const res = await fetch(url, {
+    // ✅ supportsAllDrives for Shared Drive files
+    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
+
+    const r = await fetch(url, {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
-    if (!res.ok) {
-      const text = await res.text();
-      return json(
-        { error: "Google Drive download failed", status: res.status, details: text },
-        500,
+    if (!r.ok) {
+      const txt = await r.text();
+      return new Response(
+        JSON.stringify({ error: "Drive download failed", status: r.status, details: txt }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const buf = new Uint8Array(await res.arrayBuffer());
-    return json({ base64: toBase64(buf) });
+    const buf = new Uint8Array(await r.arrayBuffer());
+    const base64 = btoa(String.fromCharCode(...buf));
+
+    return new Response(JSON.stringify({ base64 }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (e) {
-    return json({ error: "drive-download crashed", message: String(e) }, 500);
+    return new Response(JSON.stringify({ error: String(e) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });

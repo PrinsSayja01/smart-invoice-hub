@@ -1,13 +1,4 @@
-/// <reference lib="deno.ns" />
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { corsHeaders, handleCors } from "../_shared/cors.ts";
-
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}
+import { corsHeaders } from "../_shared/cors.ts";
 
 type GmailAttachment = {
   filename: string;
@@ -16,108 +7,112 @@ type GmailAttachment = {
   size?: number;
 };
 
-function findAttachments(payload: any, out: GmailAttachment[]) {
-  if (!payload) return;
-  const parts = payload.parts || [];
-  for (const p of parts) {
-    const filename = p.filename || "";
-    const mimeType = p.mimeType || "";
-    const attId = p?.body?.attachmentId;
+type GmailMessage = {
+  id: string;
+  threadId?: string;
+  subject?: string | null;
+  from?: string | null;
+  date?: string | null;
+  snippet?: string;
+  attachments: GmailAttachment[];
+};
 
-    if (
-      attId &&
-      filename &&
-      (mimeType === "application/pdf" ||
-        mimeType.startsWith("image/") ||
-        filename.toLowerCase().endsWith(".pdf") ||
-        filename.toLowerCase().match(/\.(png|jpg|jpeg)$/))
-    ) {
-      out.push({
-        filename,
-        mimeType,
-        attachmentId: attId,
-        size: p?.body?.size,
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  try {
+    const auth = req.headers.get("authorization");
+    if (!auth) {
+      return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    if (p.parts?.length) findAttachments(p, out);
-  }
-}
+    const { providerToken, maxResults = 20 } = await req.json();
+    if (!providerToken) {
+      return new Response(JSON.stringify({ error: "Missing providerToken" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-serve(async (req) => {
-  const cors = handleCors(req);
-  if (cors) return cors;
-
-  try {
-    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-
-    const body = await req.json().catch(() => ({}));
-    const providerToken = body?.providerToken as string | undefined;
-    const maxResults = Number(body?.maxResults ?? 20);
-
-    if (!providerToken) return json({ error: "Missing providerToken" }, 400);
-
-    // Stronger search: any PDF/IMG attachments in last 90 days
-    // You can add "invoice OR receipt" later, but first make sure attachments appear.
+    // ✅ last 90 days, attachments pdf/images, exclude spam/trash
     const q =
-      "newer_than:90d has:attachment (filename:pdf OR filename:png OR filename:jpg OR filename:jpeg)";
+      '(filename:pdf OR filename:jpg OR filename:jpeg OR filename:png) newer_than:90d -in:spam -in:trash';
 
-    const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
-    listUrl.searchParams.set("q", q);
-    listUrl.searchParams.set("maxResults", String(Math.min(maxResults, 50)));
+    const listRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(q)}&maxResults=${maxResults}`,
+      { headers: { Authorization: `Bearer ${providerToken}` } },
+    );
 
-    const listRes = await fetch(listUrl.toString(), {
-      headers: { Authorization: `Bearer ${providerToken}` },
-    });
-
-    const listText = await listRes.text();
+    const listTxt = await listRes.text();
     if (!listRes.ok) {
-      return json(
-        { error: "Gmail list failed", status: listRes.status, details: listText },
-        500,
+      return new Response(
+        JSON.stringify({ error: "Gmail list failed", status: listRes.status, details: listTxt }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const listData = JSON.parse(listText);
-    const msgs = Array.isArray(listData.messages) ? listData.messages : [];
+    const listJson = JSON.parse(listTxt);
+    const ids: string[] = (listJson.messages || []).map((m: any) => m.id);
 
-    const out: any[] = [];
+    const messages: GmailMessage[] = [];
 
-    for (const m of msgs) {
-      const getUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`;
-      const getRes = await fetch(getUrl, {
-        headers: { Authorization: `Bearer ${providerToken}` },
-      });
+    const getHeader = (headersArr: any[], name: string) =>
+      headersArr.find((h: any) => (h.name || "").toLowerCase() === name.toLowerCase())?.value || null;
 
-      const getText = await getRes.text();
-      if (!getRes.ok) continue;
-
-      const msgData = JSON.parse(getText);
-
-      const headers = msgData?.payload?.headers || [];
-      const subject = headers.find((h: any) => h.name === "Subject")?.value ?? null;
-      const from = headers.find((h: any) => h.name === "From")?.value ?? null;
-      const date = headers.find((h: any) => h.name === "Date")?.value ?? null;
-
-      const attachments: GmailAttachment[] = [];
-      findAttachments(msgData?.payload, attachments);
-
-      // only include emails that actually have attachments
-      if (attachments.length) {
+    const walkParts = (part: any, out: GmailAttachment[]) => {
+      if (!part) return;
+      if (part.filename && part.body?.attachmentId) {
         out.push({
-          id: msgData.id,
-          threadId: msgData.threadId,
-          subject,
-          from,
-          date,
-          snippet: msgData.snippet,
+          filename: part.filename,
+          mimeType: part.mimeType,
+          attachmentId: part.body.attachmentId,
+          size: part.body.size,
+        });
+      }
+      (part.parts || []).forEach((p: any) => walkParts(p, out));
+    };
+
+    for (const id of ids) {
+      const msgRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
+        { headers: { Authorization: `Bearer ${providerToken}` } },
+      );
+      const msgTxt = await msgRes.text();
+      if (!msgRes.ok) continue;
+
+      const msg = JSON.parse(msgTxt);
+
+      const headersArr = msg.payload?.headers || [];
+      const attachments: GmailAttachment[] = [];
+
+      // payload may itself have body/filename, but usually parts contain attachments
+      walkParts(msg.payload, attachments);
+
+      // Keep only if it actually has attachments
+      if (attachments.length) {
+        messages.push({
+          id: msg.id,
+          threadId: msg.threadId,
+          subject: getHeader(headersArr, "Subject"),
+          from: getHeader(headersArr, "From"),
+          date: getHeader(headersArr, "Date"),
+          snippet: msg.snippet,
           attachments,
         });
       }
     }
 
-    return json({ messages: out });
+    return new Response(JSON.stringify({ messages }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (e) {
-    return json({ error: "gmail-list crashed", message: String(e) }, 500);
+    return new Response(JSON.stringify({ error: String(e) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
