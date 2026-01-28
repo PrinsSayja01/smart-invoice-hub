@@ -1,10 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+import { corsHeaders } from "../_shared/cors.ts";
+import { requireSupabaseUser } from "../_shared/auth.ts";
 
 function headerValue(headers: any[], name: string) {
   const h = headers?.find((x: any) => (x.name || "").toLowerCase() === name.toLowerCase());
@@ -23,28 +19,19 @@ function extractAttachments(payload: any): any[] {
         size: part.body.size,
       });
     }
-    if (Array.isArray(part.parts)) {
-      for (const p of part.parts) walk(p);
-    }
+    if (Array.isArray(part.parts)) for (const p of part.parts) walk(p);
   };
   walk(payload);
   return out;
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  const auth = await requireSupabaseUser(req);
+  if (!auth.ok) return auth.res;
 
   try {
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
     const { providerToken, maxResults = 20 } = await req.json();
     if (!providerToken) {
       return new Response(JSON.stringify({ error: "Missing providerToken" }), {
@@ -53,10 +40,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Query: attachments with pdf/jpg/png + last 90 days
-    const q =
-      "newer_than:90d has:attachment (filename:pdf OR filename:png OR filename:jpg OR filename:jpeg)";
-
+    const q = "newer_than:90d has:attachment (filename:pdf OR filename:png OR filename:jpg OR filename:jpeg)";
     const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
     listUrl.searchParams.set("q", q);
     listUrl.searchParams.set("maxResults", String(maxResults));
@@ -75,10 +59,8 @@ Deno.serve(async (req) => {
 
     const listJson = JSON.parse(listText);
     const ids = Array.isArray(listJson?.messages) ? listJson.messages.map((m: any) => m.id) : [];
-
     const messages: any[] = [];
 
-    // fetch each message metadata + attachments
     for (const id of ids) {
       const msgUrl = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
       msgUrl.searchParams.set("format", "full");
@@ -86,12 +68,10 @@ Deno.serve(async (req) => {
       const msgRes = await fetch(msgUrl.toString(), {
         headers: { Authorization: `Bearer ${providerToken}` },
       });
-
       if (!msgRes.ok) continue;
 
       const msgJson = await msgRes.json();
       const headers = msgJson?.payload?.headers || [];
-
       const attachments = extractAttachments(msgJson?.payload);
       if (!attachments.length) continue;
 
