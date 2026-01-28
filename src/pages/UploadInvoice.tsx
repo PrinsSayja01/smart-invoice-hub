@@ -182,17 +182,19 @@ async function callEdgeFunction(name: string, body: any) {
     throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in env.');
   }
 
-  const url = `${baseUrl}/functions/v1/${name}`;
+  const { data } = await supabase.auth.getSession();
+const accessToken = data.session?.access_token;
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: anonKey,
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify(body),
-  });
+await fetch(`${SUPABASE_URL}/functions/v1/drive-list`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${accessToken}`,
+    "apikey": SUPABASE_ANON_KEY,
+  },
+  body: JSON.stringify({ providerToken }),
+});
+
 
   const text = await res.text();
   let json: any = null;
