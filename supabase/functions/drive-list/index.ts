@@ -1,26 +1,15 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+import { corsHeaders } from "../_shared/cors.ts";
+import { requireSupabaseUser } from "../_shared/auth.ts";
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  // ✅ verify Supabase session manually (fixes Invalid JWT)
+  const auth = await requireSupabaseUser(req);
+  if (!auth.ok) return auth.res;
 
   try {
-    // Supabase auth check (your frontend now sends access_token)
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
     const { providerToken } = await req.json();
     if (!providerToken) {
       return new Response(JSON.stringify({ error: "Missing providerToken" }), {
@@ -29,14 +18,12 @@ Deno.serve(async (req) => {
       });
     }
 
-    const q =
-      "mimeType='application/pdf' or mimeType contains 'image/'";
+    const q = "mimeType='application/pdf' or mimeType contains 'image/'";
 
     const url = new URL("https://www.googleapis.com/drive/v3/files");
     url.searchParams.set("q", q);
     url.searchParams.set("pageSize", "100");
     url.searchParams.set("fields", "files(id,name,mimeType,size,modifiedTime)");
-    // ✅ important for shared drives
     url.searchParams.set("supportsAllDrives", "true");
     url.searchParams.set("includeItemsFromAllDrives", "true");
 
@@ -46,10 +33,10 @@ Deno.serve(async (req) => {
 
     const text = await r.text();
     if (!r.ok) {
-      return new Response(
-        JSON.stringify({ error: "Google Drive API failed", status: r.status, details: text }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ error: "Google Drive API failed", status: r.status, details: text }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const json = JSON.parse(text);

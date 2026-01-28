@@ -1,10 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+import { corsHeaders } from "../_shared/cors.ts";
+import { requireSupabaseUser } from "../_shared/auth.ts";
 
 function toBase64(bytes: Uint8Array) {
   let binary = "";
@@ -16,19 +12,12 @@ function toBase64(bytes: Uint8Array) {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  const auth = await requireSupabaseUser(req);
+  if (!auth.ok) return auth.res;
 
   try {
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
     const { providerToken, fileId } = await req.json();
     if (!providerToken || !fileId) {
       return new Response(JSON.stringify({ error: "Missing providerToken or fileId" }), {
@@ -54,9 +43,7 @@ Deno.serve(async (req) => {
     }
 
     const buf = new Uint8Array(await r.arrayBuffer());
-    const base64 = toBase64(buf);
-
-    return new Response(JSON.stringify({ base64 }), {
+    return new Response(JSON.stringify({ base64: toBase64(buf) }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
