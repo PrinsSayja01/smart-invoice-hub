@@ -1,28 +1,44 @@
-import { corsHeaders } from "../_shared/cors.ts";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-type GmailAttachment = {
-  filename: string;
-  mimeType: string;
-  attachmentId: string;
-  size?: number;
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-type GmailMessage = {
-  id: string;
-  threadId?: string;
-  subject?: string | null;
-  from?: string | null;
-  date?: string | null;
-  snippet?: string;
-  attachments: GmailAttachment[];
-};
+function headerValue(headers: any[], name: string) {
+  const h = headers?.find((x: any) => (x.name || "").toLowerCase() === name.toLowerCase());
+  return h?.value ?? null;
+}
+
+function extractAttachments(payload: any): any[] {
+  const out: any[] = [];
+  const walk = (part: any) => {
+    if (!part) return;
+    if (part.filename && part.body?.attachmentId) {
+      out.push({
+        filename: part.filename,
+        mimeType: part.mimeType,
+        attachmentId: part.body.attachmentId,
+        size: part.body.size,
+      });
+    }
+    if (Array.isArray(part.parts)) {
+      for (const p of part.parts) walk(p);
+    }
+  };
+  walk(payload);
+  return out;
+}
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
 
   try {
-    const auth = req.headers.get("authorization");
-    if (!auth) {
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
       return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -37,76 +53,60 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ✅ last 90 days, attachments pdf/images, exclude spam/trash
+    // Query: attachments with pdf/jpg/png + last 90 days
     const q =
-      '(filename:pdf OR filename:jpg OR filename:jpeg OR filename:png) newer_than:90d -in:spam -in:trash';
+      "newer_than:90d has:attachment (filename:pdf OR filename:png OR filename:jpg OR filename:jpeg)";
 
-    const listRes = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(q)}&maxResults=${maxResults}`,
-      { headers: { Authorization: `Bearer ${providerToken}` } },
-    );
+    const listUrl = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+    listUrl.searchParams.set("q", q);
+    listUrl.searchParams.set("maxResults", String(maxResults));
 
-    const listTxt = await listRes.text();
+    const listRes = await fetch(listUrl.toString(), {
+      headers: { Authorization: `Bearer ${providerToken}` },
+    });
+
+    const listText = await listRes.text();
     if (!listRes.ok) {
-      return new Response(
-        JSON.stringify({ error: "Gmail list failed", status: listRes.status, details: listTxt }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ error: "Gmail list failed", status: listRes.status, details: listText }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const listJson = JSON.parse(listTxt);
-    const ids: string[] = (listJson.messages || []).map((m: any) => m.id);
+    const listJson = JSON.parse(listText);
+    const ids = Array.isArray(listJson?.messages) ? listJson.messages.map((m: any) => m.id) : [];
 
-    const messages: GmailMessage[] = [];
+    const messages: any[] = [];
 
-    const getHeader = (headersArr: any[], name: string) =>
-      headersArr.find((h: any) => (h.name || "").toLowerCase() === name.toLowerCase())?.value || null;
-
-    const walkParts = (part: any, out: GmailAttachment[]) => {
-      if (!part) return;
-      if (part.filename && part.body?.attachmentId) {
-        out.push({
-          filename: part.filename,
-          mimeType: part.mimeType,
-          attachmentId: part.body.attachmentId,
-          size: part.body.size,
-        });
-      }
-      (part.parts || []).forEach((p: any) => walkParts(p, out));
-    };
-
+    // fetch each message metadata + attachments
     for (const id of ids) {
-      const msgRes = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
-        { headers: { Authorization: `Bearer ${providerToken}` } },
-      );
-      const msgTxt = await msgRes.text();
+      const msgUrl = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}`);
+      msgUrl.searchParams.set("format", "full");
+
+      const msgRes = await fetch(msgUrl.toString(), {
+        headers: { Authorization: `Bearer ${providerToken}` },
+      });
+
       if (!msgRes.ok) continue;
 
-      const msg = JSON.parse(msgTxt);
+      const msgJson = await msgRes.json();
+      const headers = msgJson?.payload?.headers || [];
 
-      const headersArr = msg.payload?.headers || [];
-      const attachments: GmailAttachment[] = [];
+      const attachments = extractAttachments(msgJson?.payload);
+      if (!attachments.length) continue;
 
-      // payload may itself have body/filename, but usually parts contain attachments
-      walkParts(msg.payload, attachments);
-
-      // Keep only if it actually has attachments
-      if (attachments.length) {
-        messages.push({
-          id: msg.id,
-          threadId: msg.threadId,
-          subject: getHeader(headersArr, "Subject"),
-          from: getHeader(headersArr, "From"),
-          date: getHeader(headersArr, "Date"),
-          snippet: msg.snippet,
-          attachments,
-        });
-      }
+      messages.push({
+        id: msgJson.id,
+        threadId: msgJson.threadId,
+        subject: headerValue(headers, "Subject"),
+        from: headerValue(headers, "From"),
+        date: headerValue(headers, "Date"),
+        snippet: msgJson.snippet,
+        attachments,
+      });
     }
 
     return new Response(JSON.stringify({ messages }), {
-      status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {

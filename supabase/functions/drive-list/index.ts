@@ -1,20 +1,20 @@
-import { corsHeaders } from "../_shared/cors.ts";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-type DriveFile = {
-  id: string;
-  name: string;
-  mimeType: string;
-  size?: string;
-  modifiedTime?: string;
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
 
   try {
-    // verify_jwt=true will reject if Authorization header missing/invalid
-    const auth = req.headers.get("authorization");
-    if (!auth) {
+    // Supabase auth check (your frontend now sends access_token)
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
       return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -29,45 +29,33 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ✅ PDF + JPG/PNG, not trashed
     const q =
-      "(mimeType='application/pdf' or mimeType='image/jpeg' or mimeType='image/png') and trashed=false";
+      "mimeType='application/pdf' or mimeType contains 'image/'";
 
-    // ✅ Support shared drives too (important)
-    const params = new URLSearchParams({
-      q,
-      fields: "files(id,name,mimeType,size,modifiedTime)",
-      pageSize: "50",
-      supportsAllDrives: "true",
-      includeItemsFromAllDrives: "true",
-      corpora: "allDrives",
-    });
+    const url = new URL("https://www.googleapis.com/drive/v3/files");
+    url.searchParams.set("q", q);
+    url.searchParams.set("pageSize", "100");
+    url.searchParams.set("fields", "files(id,name,mimeType,size,modifiedTime)");
+    // ✅ important for shared drives
+    url.searchParams.set("supportsAllDrives", "true");
+    url.searchParams.set("includeItemsFromAllDrives", "true");
 
-    const url = `https://www.googleapis.com/drive/v3/files?${params.toString()}`;
-
-    const r = await fetch(url, {
+    const r = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${providerToken}` },
     });
 
-    const txt = await r.text();
+    const text = await r.text();
     if (!r.ok) {
       return new Response(
-        JSON.stringify({ error: "Google Drive API failed", status: r.status, details: txt }),
+        JSON.stringify({ error: "Google Drive API failed", status: r.status, details: text }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const json = JSON.parse(txt);
-    const files: DriveFile[] = (json.files || []).map((f: any) => ({
-      id: f.id,
-      name: f.name,
-      mimeType: f.mimeType,
-      size: f.size,
-      modifiedTime: f.modifiedTime,
-    }));
+    const json = JSON.parse(text);
+    const files = Array.isArray(json?.files) ? json.files : [];
 
     return new Response(JSON.stringify({ files }), {
-      status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
