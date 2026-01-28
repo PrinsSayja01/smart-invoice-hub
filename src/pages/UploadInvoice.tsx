@@ -1,704 +1,611 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
-/**
- * UploadInvoice Page
- * Tabs: File Upload / Google Drive / Email
- * Uses Supabase Auth (Google) + Supabase Edge Functions:
- * - drive-list
- * - drive-download
- * - gmail-list
- * - gmail-download-attachment
- */
-
-type TabKey = "file" | "drive" | "gmail";
+type Tab = "file" | "drive" | "email";
 
 type DriveFile = {
   id: string;
   name: string;
-  mimeType: string;
-  size?: string;
+  mimeType?: string;
   modifiedTime?: string;
+  size?: string;
 };
 
 type GmailAttachment = {
   messageId: string;
   attachmentId: string;
   filename: string;
-  mimeType: string;
-  size?: number;
+  mimeType?: string;
   internalDate?: string;
   from?: string;
   subject?: string;
 };
 
-function cx(...classes: Array<string | false | null | undefined>) {
+function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
-function bytesToHuman(n?: number) {
-  if (!n || n <= 0) return "";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let val = n;
-  while (val >= 1024 && i < units.length - 1) {
-    val = val / 1024;
-    i++;
-  }
-  return `${val.toFixed(val >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
-function base64ToBlob(base64: string, contentType: string) {
-  const byteCharacters = atob(base64);
-  const byteNumbers = new Array(byteCharacters.length);
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i);
-  }
-  const byteArray = new Uint8Array(byteNumbers);
-  return new Blob([byteArray], { type: contentType || "application/octet-stream" });
-}
-
-async function downloadBase64File(base64: string, mimeType: string, filename: string) {
-  const blob = base64ToBlob(base64, mimeType);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename || "download";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+async function getSessionOrThrow() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  if (!data.session) throw new Error("Not logged in");
+  return data.session;
 }
 
 export default function UploadInvoice() {
-  const [tab, setTab] = useState<TabKey>("file");
+  const [tab, setTab] = useState<Tab>("drive");
 
-  const [sessionEmail, setSessionEmail] = useState<string>("");
-  const [providerToken, setProviderToken] = useState<string>("");
-
-  const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<{ type: "error" | "success"; text: string } | null>(null);
+  const [userEmail, setUserEmail] = useState<string>("");
 
   // Drive state
   const [driveFiles, setDriveFiles] = useState<DriveFile[]>([]);
   const [driveLoading, setDriveLoading] = useState(false);
+  const [driveError, setDriveError] = useState<string>("");
   const [selectedDriveId, setSelectedDriveId] = useState<string>("");
 
   // Gmail state
-  const [gmailAttachments, setGmailAttachments] = useState<GmailAttachment[]>([]);
+  const [gmailItems, setGmailItems] = useState<GmailAttachment[]>([]);
   const [gmailLoading, setGmailLoading] = useState(false);
-  const [selectedGmailKey, setSelectedGmailKey] = useState<string>(""); // messageId::attachmentId
+  const [gmailError, setGmailError] = useState<string>("");
+  const [selectedGmailKey, setSelectedGmailKey] = useState<string>("");
 
-  // Local upload
-  const [localFiles, setLocalFiles] = useState<File[]>([]);
+  // File upload state (optional simple)
+  const [localFile, setLocalFile] = useState<File | null>(null);
 
-  const isLoggedIn = useMemo(() => !!sessionEmail, [sessionEmail]);
-
-  // Pull session + keep updated
   useEffect(() => {
-    let mounted = true;
-
-    const load = async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!mounted) return;
-
-      const s = data.session;
-      setSessionEmail(s?.user?.email ?? "");
-      setProviderToken((s as any)?.provider_token ?? "");
-    };
-
-    load();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSessionEmail(newSession?.user?.email ?? "");
-      setProviderToken((newSession as any)?.provider_token ?? "");
-    });
-
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-    };
+    (async () => {
+      try {
+        const session = await getSessionOrThrow();
+        setUserEmail(session.user?.email ?? "");
+      } catch {
+        setUserEmail("");
+      }
+    })();
   }, []);
 
-  // Auto-clear toast
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 5000);
-    return () => clearTimeout(t);
-  }, [toast]);
+  const selectedGmail = useMemo(() => {
+    if (!selectedGmailKey) return null;
+    const [messageId, attachmentId] = selectedGmailKey.split("::");
+    return gmailItems.find(
+      (x) => x.messageId === messageId && x.attachmentId === attachmentId
+    );
+  }, [gmailItems, selectedGmailKey]);
 
-  const showError = (text: string) => setToast({ type: "error", text });
-  const showSuccess = (text: string) => setToast({ type: "success", text });
+  async function signInWithGoogle(forceChooseAccount: boolean) {
+    const redirectTo = `${window.location.origin}/dashboard/upload`;
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo,
+        // IMPORTANT: these force the chooser + refresh tokens
+        queryParams: forceChooseAccount
+          ? { prompt: "consent select_account" }
+          : { prompt: "consent" },
+        scopes: [
+          // Drive read
+          "https://www.googleapis.com/auth/drive.readonly",
+          // Gmail readonly (for listing attachments)
+          "https://www.googleapis.com/auth/gmail.readonly",
+          // OpenID profile
+          "openid",
+          "email",
+          "profile",
+        ].join(" "),
+      },
+    });
+    if (error) throw error;
+  }
 
-  /**
-   * IMPORTANT: force account chooser + re-consent so user can pick different Google account.
-   * Also requests Drive + Gmail read-only scopes.
-   */
-  const connectGoogle = async () => {
+  async function useAnotherAccount() {
+    // Sign out Supabase session so Google doesn’t silently reuse tokens
+    await supabase.auth.signOut();
+    // Force chooser
+    await signInWithGoogle(true);
+  }
+
+  function prettyError(e: any) {
+    if (!e) return "Unknown error";
+    if (typeof e === "string") return e;
+    if (e?.message) return e.message;
     try {
-      setBusy(true);
-      setToast(null);
-
-      const redirectTo = `${window.location.origin}/dashboard/upload`;
-
-      const scopes = [
-        "openid",
-        "email",
-        "profile",
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/gmail.readonly",
-      ].join(" ");
-
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo,
-          scopes,
-          queryParams: {
-            access_type: "offline",
-            prompt: "consent select_account", // <-- THIS forces account picker + consent screen
-            include_granted_scopes: "true",
-          },
-        },
-      });
-
-      if (error) throw error;
-    } catch (e: any) {
-      showError(e?.message || "Google login failed");
-    } finally {
-      setBusy(false);
+      return JSON.stringify(e);
+    } catch {
+      return String(e);
     }
-  };
+  }
 
-  const logout = async () => {
+  async function listDriveFiles() {
+    setDriveError("");
+    setDriveLoading(true);
+    setDriveFiles([]);
+    setSelectedDriveId("");
+
     try {
-      setBusy(true);
-      setToast(null);
-      await supabase.auth.signOut();
-      setDriveFiles([]);
-      setGmailAttachments([]);
-      setSelectedDriveId("");
-      setSelectedGmailKey("");
-      showSuccess("Logged out");
-    } catch (e: any) {
-      showError(e?.message || "Logout failed");
-    } finally {
-      setBusy(false);
-    }
-  };
+      await getSessionOrThrow();
 
-  const useAnotherAccount = async () => {
-    // safest pattern: sign out (clears cached session) then OAuth login with account chooser
-    await logout();
-    await connectGoogle();
-  };
-
-  /**
-   * DRIVE: list files via Edge Function
-   * Uses supabase.functions.invoke so Authorization header is correct (fixes Invalid JWT most of the time)
-   */
-  const fetchDriveFiles = async () => {
-    try {
-      setDriveLoading(true);
-      setToast(null);
-      setSelectedDriveId("");
-      setDriveFiles([]);
-
-      if (!isLoggedIn) {
-        showError("Please login with Google first.");
-        return;
-      }
-      if (!providerToken) {
-        showError("Google provider token missing. Click 'Use another account' and login again with consent.");
-        return;
-      }
-
+      // ✅ BEST: invoke edge function (handles auth header + URL)
       const { data, error } = await supabase.functions.invoke("drive-list", {
         body: {
-          provider_token: providerToken,
-          // you can pass folderId here if you want to limit search
-          // folderId: "xxx"
+          // optional: you can pass folderId if your function supports it
+          // folderId: null,
+          // optional: support shared drives if your function supports it
+          // includeSharedDrives: true,
         },
       });
 
-      if (error) throw error;
+      if (error) {
+        throw error;
+      }
 
-      const files: DriveFile[] = data?.files ?? [];
-      setDriveFiles(files);
+      const files: DriveFile[] =
+        data?.files || data?.data?.files || data || [];
 
-      if (!files.length) {
-        showError("No PDF or image files found in your Google Drive.");
-      } else {
-        showSuccess(`Found ${files.length} files in Drive`);
+      // Filter client-side to be safe (PDF + images)
+      const filtered = (files || []).filter((f) => {
+        const name = (f.name || "").toLowerCase();
+        const mt = (f.mimeType || "").toLowerCase();
+        return (
+          mt.includes("pdf") ||
+          mt.includes("image/") ||
+          name.endsWith(".pdf") ||
+          name.endsWith(".png") ||
+          name.endsWith(".jpg") ||
+          name.endsWith(".jpeg") ||
+          name.endsWith(".webp")
+        );
+      });
+
+      setDriveFiles(filtered);
+      if (filtered.length === 0) {
+        setDriveError(
+          "No PDF or image files found in Drive. (If your invoices are in Shared Drive, enable shared-drive support in the drive-list function.)"
+        );
       }
     } catch (e: any) {
-      // supabase-js edge errors may be in e.context or e.message
-      showError(e?.message || "Drive fetch error");
+      setDriveError(prettyError(e));
     } finally {
       setDriveLoading(false);
     }
-  };
+  }
 
-  const downloadDriveFile = async () => {
+  async function downloadDriveSelected() {
+    setDriveError("");
     try {
-      if (!selectedDriveId) {
-        showError("Select a Drive file first.");
-        return;
-      }
-      if (!providerToken) {
-        showError("Google provider token missing. Login again with consent.");
-        return;
-      }
-
-      setBusy(true);
-      setToast(null);
-
-      const selected = driveFiles.find((f) => f.id === selectedDriveId);
+      await getSessionOrThrow();
+      if (!selectedDriveId) throw new Error("Select a file first.");
 
       const { data, error } = await supabase.functions.invoke("drive-download", {
-        body: {
-          provider_token: providerToken,
-          fileId: selectedDriveId,
-        },
+        body: { fileId: selectedDriveId },
       });
 
       if (error) throw error;
 
-      // expected response: { name, mimeType, contentBase64 }
-      const name = data?.name || selected?.name || "drive-file";
-      const mimeType = data?.mimeType || selected?.mimeType || "application/octet-stream";
-      const contentBase64 = data?.contentBase64;
+      // Expecting: { filename, mimeType, base64 } or { url } or raw bytes
+      const filename =
+        data?.filename || data?.name || "drive-file-download.pdf";
+      const mimeType = data?.mimeType || "application/octet-stream";
 
-      if (!contentBase64) {
-        showError("Download failed: no file content received.");
+      if (data?.base64) {
+        const byteCharacters = atob(data.base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const blob = new Blob([new Uint8Array(byteNumbers)], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
         return;
       }
 
-      await downloadBase64File(contentBase64, mimeType, name);
-      showSuccess("Drive file downloaded");
+      if (data?.url) {
+        window.open(data.url, "_blank");
+        return;
+      }
+
+      // If your function returns bytes as array:
+      if (Array.isArray(data?.bytes)) {
+        const blob = new Blob([new Uint8Array(data.bytes)], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      throw new Error(
+        "drive-download returned unexpected response. Expected {base64} or {url}."
+      );
     } catch (e: any) {
-      showError(e?.message || "Drive download error");
-    } finally {
-      setBusy(false);
+      setDriveError(prettyError(e));
     }
-  };
+  }
 
-  /**
-   * GMAIL: list invoice-like attachments
-   */
-  const fetchGmailAttachments = async () => {
+  async function listGmailAttachments() {
+    setGmailError("");
+    setGmailLoading(true);
+    setGmailItems([]);
+    setSelectedGmailKey("");
+
     try {
-      setGmailLoading(true);
-      setToast(null);
-      setSelectedGmailKey("");
-      setGmailAttachments([]);
-
-      if (!isLoggedIn) {
-        showError("Please login with Google first.");
-        return;
-      }
-      if (!providerToken) {
-        showError("Google provider token missing. Click 'Use another account' and login again with consent.");
-        return;
-      }
+      await getSessionOrThrow();
 
       const { data, error } = await supabase.functions.invoke("gmail-list", {
         body: {
-          provider_token: providerToken,
+          // optional: your function can use these params if implemented
           days: 90,
+          // query: 'filename:pdf OR filename:jpg OR filename:png',
         },
       });
 
       if (error) throw error;
 
-      const items: GmailAttachment[] = data?.attachments ?? [];
-      setGmailAttachments(items);
+      const items: GmailAttachment[] =
+        data?.attachments || data?.data?.attachments || data || [];
 
-      if (!items.length) {
-        showError("No invoice attachments found in Gmail (last 90 days).");
-      } else {
-        showSuccess(`Found ${items.length} Gmail attachments`);
+      const filtered = (items || []).filter((x) => {
+        const fn = (x.filename || "").toLowerCase();
+        const mt = (x.mimeType || "").toLowerCase();
+        return (
+          mt.includes("pdf") ||
+          mt.includes("image/") ||
+          fn.endsWith(".pdf") ||
+          fn.endsWith(".png") ||
+          fn.endsWith(".jpg") ||
+          fn.endsWith(".jpeg") ||
+          fn.endsWith(".webp")
+        );
+      });
+
+      setGmailItems(filtered);
+      if (filtered.length === 0) {
+        setGmailError(
+          "No invoice attachments found in Gmail (last 90 days). Try searching emails that contain PDF/JPG invoices."
+        );
       }
     } catch (e: any) {
-      showError(e?.message || "Gmail fetch error");
+      setGmailError(prettyError(e));
     } finally {
       setGmailLoading(false);
     }
-  };
+  }
 
-  const downloadGmailAttachment = async () => {
+  async function downloadSelectedGmailAttachment() {
+    setGmailError("");
     try {
-      if (!selectedGmailKey) {
-        showError("Select a Gmail attachment first.");
-        return;
-      }
-      if (!providerToken) {
-        showError("Google provider token missing. Login again with consent.");
-        return;
-      }
+      await getSessionOrThrow();
+      if (!selectedGmail)
+        throw new Error("Select an attachment first.");
 
-      const [messageId, attachmentId] = selectedGmailKey.split("::");
-      const selected = gmailAttachments.find(
-        (a) => a.messageId === messageId && a.attachmentId === attachmentId
+      const { data, error } = await supabase.functions.invoke(
+        "gmail-download-attachment",
+        {
+          body: {
+            messageId: selectedGmail.messageId,
+            attachmentId: selectedGmail.attachmentId,
+          },
+        }
       );
-
-      setBusy(true);
-      setToast(null);
-
-      const { data, error } = await supabase.functions.invoke("gmail-download-attachment", {
-        body: {
-          provider_token: providerToken,
-          messageId,
-          attachmentId,
-        },
-      });
 
       if (error) throw error;
 
-      // expected response: { filename, mimeType, contentBase64 }
-      const filename = data?.filename || selected?.filename || "gmail-attachment";
-      const mimeType = data?.mimeType || selected?.mimeType || "application/octet-stream";
-      const contentBase64 = data?.contentBase64;
+      const filename =
+        data?.filename || selectedGmail.filename || "gmail-attachment";
+      const mimeType = data?.mimeType || selectedGmail.mimeType || "application/octet-stream";
 
-      if (!contentBase64) {
-        showError("Download failed: no attachment content received.");
+      if (data?.base64) {
+        const byteCharacters = atob(data.base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const blob = new Blob([new Uint8Array(byteNumbers)], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
         return;
       }
 
-      await downloadBase64File(contentBase64, mimeType, filename);
-      showSuccess("Gmail attachment downloaded");
-    } catch (e: any) {
-      showError(e?.message || "Gmail download error");
-    } finally {
-      setBusy(false);
-    }
-  };
+      if (data?.url) {
+        window.open(data.url, "_blank");
+        return;
+      }
 
-  // UI helpers
-  const TabButton = ({
-    k,
-    label,
-  }: {
-    k: TabKey;
-    label: string;
-  }) => (
-    <button
-      onClick={() => setTab(k)}
-      className={cx(
-        "px-4 py-2 rounded-lg text-sm font-medium transition",
-        tab === k
-          ? "bg-white shadow text-gray-900"
-          : "text-gray-600 hover:bg-white/60"
-      )}
-      type="button"
-    >
-      {label}
-    </button>
-  );
+      throw new Error(
+        "gmail-download-attachment returned unexpected response. Expected {base64} or {url}."
+      );
+    } catch (e: any) {
+      setGmailError(prettyError(e));
+    }
+  }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100">
-      <div className="max-w-4xl mx-auto px-4 py-10">
-        <div className="flex items-start justify-between gap-4">
+    <div className="min-h-[calc(100vh-64px)] w-full bg-gradient-to-b from-slate-50 to-slate-100 p-6">
+      <div className="mx-auto w-full max-w-5xl">
+        <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-semibold text-gray-900">Upload Invoice</h1>
-            <p className="text-gray-600 mt-1">Upload invoices via file, Google Drive, or email</p>
+            <h1 className="text-3xl font-semibold text-slate-900">Upload Invoice</h1>
+            <p className="text-slate-600">
+              Upload invoices via file, Google Drive, or email
+            </p>
           </div>
 
           <div className="flex items-center gap-3">
-            {isLoggedIn ? (
-              <>
-                <div className="text-sm text-gray-700">
-                  <div className="text-xs text-gray-500">Logged in as</div>
-                  <div className="font-medium">{sessionEmail}</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={logout}
-                  disabled={busy}
-                  className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-60"
-                >
-                  Logout
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={connectGoogle}
-                disabled={busy}
-                className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-60"
-              >
-                Login with Google
-              </button>
-            )}
+            <div className="text-sm text-slate-600">
+              Logged in as{" "}
+              <span className="font-medium text-slate-900">
+                {userEmail || "—"}
+              </span>
+            </div>
+            <button
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50"
+              onClick={async () => {
+                await supabase.auth.signOut();
+                window.location.reload();
+              }}
+            >
+              Logout
+            </button>
           </div>
         </div>
 
-        <div className="mt-6 bg-white/70 backdrop-blur rounded-2xl p-3 flex gap-2">
-          <TabButton k="file" label="File Upload" />
-          <TabButton k="drive" label="Google Drive" />
-          <TabButton k="gmail" label="Email" />
+        {/* Tabs */}
+        <div className="mb-6 flex gap-2 rounded-2xl bg-white p-2 shadow-sm ring-1 ring-slate-200">
+          <button
+            className={cn(
+              "flex-1 rounded-xl px-4 py-2 text-sm font-medium",
+              tab === "file" ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-50"
+            )}
+            onClick={() => setTab("file")}
+          >
+            File Upload
+          </button>
+
+          <button
+            className={cn(
+              "flex-1 rounded-xl px-4 py-2 text-sm font-medium",
+              tab === "drive" ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-50"
+            )}
+            onClick={() => setTab("drive")}
+          >
+            Google Drive
+          </button>
+
+          <button
+            className={cn(
+              "flex-1 rounded-xl px-4 py-2 text-sm font-medium",
+              tab === "email" ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-50"
+            )}
+            onClick={() => setTab("email")}
+          >
+            Email
+          </button>
         </div>
 
-        {/* CONTENT */}
-        <div className="mt-6 bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+        {/* Card */}
+        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
           {tab === "file" && (
             <div>
-              <h2 className="text-lg font-semibold text-gray-900">File Upload</h2>
-              <p className="text-sm text-gray-600 mt-1">Upload PDF or image invoices from your computer.</p>
+              <h2 className="mb-1 text-lg font-semibold text-slate-900">
+                Upload from your computer
+              </h2>
+              <p className="mb-4 text-sm text-slate-600">
+                Choose a PDF or image invoice file.
+              </p>
 
-              <div className="mt-5">
-                <input
-                  type="file"
-                  accept="application/pdf,image/*"
-                  multiple
-                  onChange={(e) => setLocalFiles(Array.from(e.target.files || []))}
-                  className="block w-full text-sm text-gray-700"
-                />
+              <input
+                type="file"
+                accept=".pdf,image/*"
+                onChange={(e) => setLocalFile(e.target.files?.[0] ?? null)}
+              />
 
-                {localFiles.length > 0 && (
-                  <div className="mt-4">
-                    <div className="text-sm font-medium text-gray-900">Selected files</div>
-                    <ul className="mt-2 space-y-2">
-                      {localFiles.map((f) => (
-                        <li key={f.name} className="flex items-center justify-between text-sm">
-                          <span className="text-gray-800">{f.name}</span>
-                          <span className="text-gray-500">{bytesToHuman(f.size)}</span>
-                        </li>
-                      ))}
-                    </ul>
-
-                    <div className="mt-4 text-xs text-gray-500">
-                      (This tab just selects files. If you already have a processing/upload endpoint,
-                      connect it here.)
-                    </div>
-                  </div>
-                )}
-              </div>
+              {localFile && (
+                <div className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-700 ring-1 ring-slate-200">
+                  Selected: <span className="font-medium">{localFile.name}</span>
+                </div>
+              )}
             </div>
           )}
 
           {tab === "drive" && (
             <div>
-              <h2 className="text-lg font-semibold text-gray-900">Import from Google Drive</h2>
-              <p className="text-sm text-gray-600 mt-1">Access PDF and image invoices from your Google Drive.</p>
-
-              <div className="mt-4 p-4 rounded-xl border bg-gray-50">
-                <div className="text-sm text-gray-800">
-                  Logged in as: <span className="font-medium">{sessionEmail || "-"}</span>
-                </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  Provider token:{" "}
-                  {providerToken ? <span className="text-green-600 font-medium">available</span> : <span className="text-red-600 font-medium">missing</span>}
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    Import from your Google Drive
+                  </h2>
+                  <p className="text-sm text-slate-600">
+                    Access PDF/image invoices from your Drive account.
+                  </p>
                 </div>
 
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {!isLoggedIn ? (
-                    <button
-                      type="button"
-                      onClick={connectGoogle}
-                      disabled={busy}
-                      className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-60"
-                    >
-                      Connect Google
-                    </button>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={fetchDriveFiles}
-                        disabled={driveLoading || busy}
-                        className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-60"
-                      >
-                        {driveLoading ? "Loading..." : "Browse My Drive Files"}
-                      </button>
+                <button
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50"
+                  onClick={useAnotherAccount}
+                >
+                  Use another account
+                </button>
+              </div>
 
-                      <button
-                        type="button"
-                        onClick={useAnotherAccount}
-                        disabled={busy}
-                        className="px-4 py-2 rounded-lg bg-white border text-gray-800 text-sm hover:bg-gray-50 disabled:opacity-60"
-                      >
-                        Use another account
-                      </button>
-                    </>
+              <div className="mb-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-700 ring-1 ring-slate-200">
+                Logged in as: <span className="font-medium">{userEmail || "—"}</span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  className={cn(
+                    "rounded-xl px-4 py-2 text-sm font-semibold text-white",
+                    driveLoading ? "bg-slate-400" : "bg-blue-600 hover:bg-blue-700"
                   )}
-                </div>
-              </div>
+                  onClick={listDriveFiles}
+                  disabled={driveLoading}
+                >
+                  {driveLoading ? "Loading..." : "Browse My Drive Files"}
+                </button>
 
-              {/* Drive list */}
-              <div className="mt-6">
-                <div className="text-sm font-medium text-gray-900">Drive Files</div>
-
-                {driveFiles.length === 0 ? (
-                  <div className="mt-3 text-sm text-gray-500">
-                    Click “Browse My Drive Files” to load your PDF and image files.
-                  </div>
-                ) : (
-                  <div className="mt-3 space-y-2">
-                    {driveFiles.map((f) => (
-                      <label
-                        key={f.id}
-                        className={cx(
-                          "flex items-center justify-between gap-3 p-3 rounded-xl border cursor-pointer",
-                          selectedDriveId === f.id ? "border-blue-500 bg-blue-50" : "bg-white hover:bg-gray-50"
-                        )}
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <input
-                            type="radio"
-                            name="driveFile"
-                            checked={selectedDriveId === f.id}
-                            onChange={() => setSelectedDriveId(f.id)}
-                          />
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium text-gray-900 truncate">{f.name}</div>
-                            <div className="text-xs text-gray-500 truncate">{f.mimeType}</div>
-                          </div>
-                        </div>
-                        <div className="text-xs text-gray-500 whitespace-nowrap">
-                          {f.size ? bytesToHuman(Number(f.size)) : ""}
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                )}
-
-                <div className="mt-4">
-                  <button
-                    type="button"
-                    onClick={downloadDriveFile}
-                    disabled={!selectedDriveId || busy}
-                    className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-60"
-                  >
-                    Download Selected Drive File
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {tab === "gmail" && (
-            <div>
-              <h2 className="text-lg font-semibold text-gray-900">Gmail Integration</h2>
-              <p className="text-sm text-gray-600 mt-1">
-                Process invoice attachments from your Gmail (last 90 days).
-              </p>
-
-              <div className="mt-4 p-4 rounded-xl border bg-gray-50">
-                <div className="text-sm text-gray-800">
-                  Connected to: <span className="font-medium">{sessionEmail || "-"}</span>
-                </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  Provider token:{" "}
-                  {providerToken ? <span className="text-green-600 font-medium">available</span> : <span className="text-red-600 font-medium">missing</span>}
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {!isLoggedIn ? (
-                    <button
-                      type="button"
-                      onClick={connectGoogle}
-                      disabled={busy}
-                      className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-60"
-                    >
-                      Connect Google
-                    </button>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={fetchGmailAttachments}
-                        disabled={gmailLoading || busy}
-                        className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-60"
-                      >
-                        {gmailLoading ? "Loading..." : "Browse Gmail Invoices"}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={useAnotherAccount}
-                        disabled={busy}
-                        className="px-4 py-2 rounded-lg bg-white border text-gray-800 text-sm hover:bg-gray-50 disabled:opacity-60"
-                      >
-                        Use another account
-                      </button>
-                    </>
+                <button
+                  className={cn(
+                    "rounded-xl px-4 py-2 text-sm font-semibold",
+                    selectedDriveId
+                      ? "bg-slate-900 text-white hover:bg-slate-800"
+                      : "bg-slate-200 text-slate-500"
                   )}
-                </div>
+                  disabled={!selectedDriveId}
+                  onClick={downloadDriveSelected}
+                >
+                  Download Selected Drive File
+                </button>
               </div>
 
-              {/* Gmail list */}
-              <div className="mt-6">
-                <div className="text-sm font-medium text-gray-900">Attachments</div>
+              {driveError && (
+                <div className="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-700 ring-1 ring-red-200">
+                  <div className="font-semibold">Drive error</div>
+                  <div className="mt-1 whitespace-pre-wrap">{driveError}</div>
+                </div>
+              )}
 
-                {gmailAttachments.length === 0 ? (
-                  <div className="mt-3 text-sm text-gray-500">
-                    Click “Browse Gmail Invoices” to load invoice-like attachments (pdf/jpg/png).
-                  </div>
-                ) : (
-                  <div className="mt-3 space-y-2">
-                    {gmailAttachments.map((a) => {
-                      const key = `${a.messageId}::${a.attachmentId}`;
+              {driveFiles.length > 0 && (
+                <div className="mt-6">
+                  <h3 className="mb-2 text-sm font-semibold text-slate-900">
+                    Select a file
+                  </h3>
+                  <div className="max-h-80 overflow-auto rounded-xl ring-1 ring-slate-200">
+                    {driveFiles.map((f) => {
+                      const selected = selectedDriveId === f.id;
                       return (
-                        <label
-                          key={key}
-                          className={cx(
-                            "flex items-center justify-between gap-3 p-3 rounded-xl border cursor-pointer",
-                            selectedGmailKey === key ? "border-blue-500 bg-blue-50" : "bg-white hover:bg-gray-50"
+                        <button
+                          key={f.id}
+                          onClick={() => setSelectedDriveId(f.id)}
+                          className={cn(
+                            "flex w-full items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 text-left text-sm",
+                            selected ? "bg-slate-900 text-white" : "bg-white hover:bg-slate-50"
                           )}
                         >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <input
-                              type="radio"
-                              name="gmailAttach"
-                              checked={selectedGmailKey === key}
-                              onChange={() => setSelectedGmailKey(key)}
-                            />
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium text-gray-900 truncate">{a.filename}</div>
-                              <div className="text-xs text-gray-500 truncate">
-                                {a.mimeType}
-                                {a.subject ? ` • ${a.subject}` : ""}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="text-xs text-gray-500 whitespace-nowrap">
-                            {a.size ? bytesToHuman(a.size) : ""}
-                          </div>
-                        </label>
+                          <span className="truncate font-medium">{f.name}</span>
+                          <span className={cn("text-xs", selected ? "text-slate-200" : "text-slate-500")}>
+                            {f.mimeType || ""}
+                          </span>
+                        </button>
                       );
                     })}
                   </div>
-                )}
-
-                <div className="mt-4">
-                  <button
-                    type="button"
-                    onClick={downloadGmailAttachment}
-                    disabled={!selectedGmailKey || busy}
-                    className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm hover:bg-gray-800 disabled:opacity-60"
-                  >
-                    Download Selected Gmail Attachment
-                  </button>
                 </div>
+              )}
+            </div>
+          )}
+
+          {tab === "email" && (
+            <div>
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    Gmail Integration
+                  </h2>
+                  <p className="text-sm text-slate-600">
+                    Process invoice attachments from Gmail (last 90 days).
+                  </p>
+                </div>
+
+                <button
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50"
+                  onClick={useAnotherAccount}
+                >
+                  Use another account
+                </button>
               </div>
+
+              <div className="mb-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-700 ring-1 ring-slate-200">
+                Connected to: <span className="font-medium">{userEmail || "—"}</span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  className={cn(
+                    "rounded-xl px-4 py-2 text-sm font-semibold text-white",
+                    gmailLoading ? "bg-slate-400" : "bg-blue-600 hover:bg-blue-700"
+                  )}
+                  onClick={listGmailAttachments}
+                  disabled={gmailLoading}
+                >
+                  {gmailLoading ? "Loading..." : "Browse Gmail Invoices"}
+                </button>
+
+                <button
+                  className={cn(
+                    "rounded-xl px-4 py-2 text-sm font-semibold",
+                    selectedGmail
+                      ? "bg-slate-900 text-white hover:bg-slate-800"
+                      : "bg-slate-200 text-slate-500"
+                  )}
+                  disabled={!selectedGmail}
+                  onClick={downloadSelectedGmailAttachment}
+                >
+                  Download Selected Gmail Attachment
+                </button>
+              </div>
+
+              {gmailError && (
+                <div className="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-700 ring-1 ring-red-200">
+                  <div className="font-semibold">Gmail error</div>
+                  <div className="mt-1 whitespace-pre-wrap">{gmailError}</div>
+                </div>
+              )}
+
+              {gmailItems.length > 0 && (
+                <div className="mt-6">
+                  <h3 className="mb-2 text-sm font-semibold text-slate-900">
+                    Select an attachment
+                  </h3>
+                  <div className="max-h-80 overflow-auto rounded-xl ring-1 ring-slate-200">
+                    {gmailItems.map((x) => {
+                      const key = `${x.messageId}::${x.attachmentId}`;
+                      const selected = selectedGmailKey === key;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => setSelectedGmailKey(key)}
+                          className={cn(
+                            "flex w-full flex-col gap-1 border-b border-slate-200 px-4 py-3 text-left text-sm",
+                            selected ? "bg-slate-900 text-white" : "bg-white hover:bg-slate-50"
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="truncate font-medium">{x.filename}</span>
+                            <span className={cn("text-xs", selected ? "text-slate-200" : "text-slate-500")}>
+                              {x.mimeType || ""}
+                            </span>
+                          </div>
+                          {(x.subject || x.from) && (
+                            <div className={cn("text-xs", selected ? "text-slate-200" : "text-slate-500")}>
+                              {x.subject ? `Subject: ${x.subject}` : ""}
+                              {x.subject && x.from ? " • " : ""}
+                              {x.from ? `From: ${x.from}` : ""}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        {/* Toast */}
-        {toast && (
-          <div
-            className={cx(
-              "fixed right-6 bottom-6 max-w-md rounded-xl px-4 py-3 shadow-lg border",
-              toast.type === "error" ? "bg-red-600 text-white border-red-500" : "bg-green-600 text-white border-green-500"
-            )}
-          >
-            <div className="text-sm font-medium">{toast.type === "error" ? "Error" : "Success"}</div>
-            <div className="text-sm opacity-95 mt-1">{toast.text}</div>
-          </div>
-        )}
+        {/* Helpful footer */}
+        <div className="mt-6 text-xs text-slate-500">
+          Tip: If Google keeps reusing the same account, click{" "}
+          <span className="font-semibold">Use another account</span> to force the
+          account chooser.
+        </div>
       </div>
     </div>
   );
