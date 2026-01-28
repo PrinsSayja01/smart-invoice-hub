@@ -1,88 +1,71 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+/// <reference lib="deno.ns" />
+import { corsHeaders } from "../_shared/cors.ts";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Max-Age": "86400",
-};
-
-serve(async (req) => {
-  // ✅ PRE-FLIGHT must return instantly
+Deno.serve(async (req) => {
+  // ✅ CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const { providerToken } = await req.json().catch(() => ({}));
+    const { providerToken, pageSize = 50 } = await req.json();
 
     if (!providerToken) {
       return new Response(
-        JSON.stringify({ error: "Missing providerToken. Please login again." }),
+        JSON.stringify({ error: "Missing providerToken" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const q = encodeURIComponent(
-      `trashed=false and (mimeType='application/pdf' or mimeType contains 'image/')`,
+    // ✅ Query: PDFs + images, exclude trashed
+    const q =
+      `(mimeType='application/pdf' or mimeType contains 'image/') and trashed=false`;
+
+    // ✅ Supports Shared Drive + normal drive
+    const url = new URL("https://www.googleapis.com/drive/v3/files");
+    url.searchParams.set("q", q);
+    url.searchParams.set("pageSize", String(pageSize));
+    url.searchParams.set(
+      "fields",
+      "files(id,name,mimeType,size,modifiedTime),nextPageToken",
     );
 
-    const url =
-      `https://www.googleapis.com/drive/v3/files` +
-      `?q=${q}` +
-      `&fields=files(id,name,mimeType,size,modifiedTime,driveId),nextPageToken` +
-      `&pageSize=100` +
-      `&supportsAllDrives=true` +
-      `&includeItemsFromAllDrives=true` +
-      `&corpora=allDrives`;
+    // VERY IMPORTANT for Shared Drive + “My Drive” mixed cases
+    url.searchParams.set("includeItemsFromAllDrives", "true");
+    url.searchParams.set("supportsAllDrives", "true");
+    url.searchParams.set("corpora", "user"); // use "allDrives" if needed later
 
-    const r = await fetch(url, {
-      headers: { Authorization: `Bearer ${providerToken}` },
+    const res = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${providerToken}`,
+      },
     });
 
-    const raw = await r.text();
+    const text = await res.text();
 
-    // ✅ If Google rejects token or scope -> RETURN THAT STATUS (401/403) to frontend
-    if (!r.ok) {
-      let parsed: any = null;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        parsed = raw;
-      }
-
-      const status = r.status;
-
-      // Friendly hint for the most common case
-      const hint =
-        status === 401
-          ? "Google access token expired. Please logout and login again."
-          : status === 403
-          ? "Missing Google Drive scopes. Reconnect Google with drive.readonly permission."
-          : "Google Drive API error.";
-
+    if (!res.ok) {
+      // ✅ Return Google error cleanly (NO crash => no 502)
       return new Response(
         JSON.stringify({
           error: "Google Drive API failed",
-          status,
-          hint,
-          google: parsed,
+          status: res.status,
+          details: text,
         }),
-        { status, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const json = JSON.parse(raw);
-    const files = Array.isArray(json?.files) ? json.files : [];
+    const json = JSON.parse(text);
 
     return new Response(
-      JSON.stringify({ files }),
+      JSON.stringify({ files: json.files || [], nextPageToken: json.nextPageToken || null }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
-  } catch (e: any) {
+  } catch (err) {
+    // ✅ Never crash => never 502
     return new Response(
-      JSON.stringify({ error: e?.message || "Unknown server error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      JSON.stringify({ error: "drive-list crashed", details: String(err?.message || err) }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });
