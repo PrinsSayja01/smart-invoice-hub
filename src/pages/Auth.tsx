@@ -25,9 +25,7 @@ export default function Auth() {
       email,
       password,
       options: {
-        data: {
-          full_name: fullName,
-        },
+        data: { full_name: fullName },
         emailRedirectTo: window.location.origin,
       },
     });
@@ -53,10 +51,7 @@ export default function Auth() {
     e.preventDefault();
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
       toast({
@@ -76,10 +71,21 @@ export default function Auth() {
   };
 
   const handleGoogleSignIn = async () => {
+    // keep redirect stable (avoid 404)
+    const redirectTo = `${window.location.origin}/dashboard`;
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/dashboard`,
+        redirectTo,
+        // ✅ IMPORTANT: Drive + Gmail scopes for provider_token
+        scopes:
+          'openid email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly',
+        queryParams: {
+          access_type: 'offline',
+          // ✅ always show account chooser
+          prompt: 'consent select_account',
+        },
       },
     });
 
