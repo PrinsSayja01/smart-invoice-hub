@@ -1,12 +1,5 @@
-import { createClient } from "@supabase/supabase-js";
+// IMPORTANT:
+// Do NOT createClient() here (that caused "already declared").
+// This file only re-exports the main client so old imports keep working.
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-  },
-});
+export { supabase } from "../integrations/supabase/client";
