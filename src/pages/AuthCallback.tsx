@@ -6,13 +6,35 @@ export default function AuthCallback() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    let mounted = true;
+
     (async () => {
-      // Supabase reads tokens from URL automatically
-      const { data } = await supabase.auth.getSession();
-      if (data.session) navigate("/dashboard");
-      else navigate("/auth");
+      try {
+        // Supabase will read the OAuth tokens from the URL automatically.
+        // We just wait for session to be available.
+        const { data } = await supabase.auth.getSession();
+
+        if (!mounted) return;
+
+        if (data.session) {
+          navigate("/dashboard", { replace: true });
+        } else {
+          navigate("/auth", { replace: true });
+        }
+      } catch (e) {
+        if (!mounted) return;
+        navigate("/auth", { replace: true });
+      }
     })();
+
+    return () => {
+      mounted = false;
+    };
   }, [navigate]);
 
-  return <div className="p-6">Signing you in...</div>;
+  return (
+    <div className="min-h-screen flex items-center justify-center p-6">
+      <div className="text-sm text-muted-foreground">Signing you in…</div>
+    </div>
+  );
 }
