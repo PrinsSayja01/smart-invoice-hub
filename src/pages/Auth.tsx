@@ -71,8 +71,20 @@ export default function Auth() {
   };
 
   const handleGoogleSignIn = async () => {
+  await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo: `${window.location.origin}/`,
+      queryParams: {
+        prompt: "select_account",
+        access_type: "offline",
+      },
+    },
+  });
+};
+
     // keep redirect stable (avoid 404)
-    const redirectTo = `${window.location.origin}/dashboard`;
+    const redirectTo: `${window.location.origin}/`;
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
