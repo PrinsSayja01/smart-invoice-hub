@@ -1,17 +1,29 @@
-import { corsHeaders } from "../_shared/cors.ts";
+/// <reference lib="deno.ns" />
 
-function base64urlToBase64(input: string) {
-  return (input || "").replace(/-/g, "+").replace(/_/g, "/");
-}
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { corsHeaders, handleCors } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
+import { fromBase64UrlSafe } from "../_shared/base64.ts";
 
-Deno.serve(async (req) => {
+serve(async (req) => {
+  const cors = handleCors(req);
+  if (cors) return cors;
+
   try {
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { headers: corsHeaders });
+    const { user, error: authErr } = await requireUser(req);
+    if (authErr || !user) {
+      return new Response(JSON.stringify({ error: "Invalid JWT" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const { providerToken, messageId, attachmentId, filename, mimeType } =
-      await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => ({}));
+    const providerToken = body?.providerToken as string | undefined;
+    const messageId = body?.messageId as string | undefined;
+    const attachmentId = body?.attachmentId as string | undefined;
+    const filename = body?.filename as string | undefined;
+    const mimeType = body?.mimeType as string | undefined;
 
     if (!providerToken || !messageId || !attachmentId) {
       return new Response(JSON.stringify({ error: "Missing providerToken/messageId/attachmentId" }), {
@@ -21,22 +33,32 @@ Deno.serve(async (req) => {
     }
 
     const url =
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
-        messageId,
-      )}/attachments/${encodeURIComponent(attachmentId)}`;
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}` +
+      `/attachments/${encodeURIComponent(attachmentId)}`;
 
-    const resp = await fetch(url, { headers: { Authorization: `Bearer ${providerToken}` } });
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${providerToken}` },
+    });
 
-    const text = await resp.text();
-    if (!resp.ok) {
-      return new Response(JSON.stringify({ error: "Attachment download failed", status: resp.status, details: text }), {
+    const text = await res.text();
+    if (!res.ok) {
+      return new Response(
+        JSON.stringify({ error: "Gmail attachment download failed", status: res.status, details: text }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const json = JSON.parse(text);
+    const dataUrlSafe = json?.data as string | undefined;
+    if (!dataUrlSafe) {
+      return new Response(JSON.stringify({ error: "Attachment missing data" }), {
         status: 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const json = JSON.parse(text);
-    const base64 = base64urlToBase64(json.data ?? "");
+    // Gmail returns base64url => convert to standard base64 for browser atob()
+    const base64 = fromBase64UrlSafe(dataUrlSafe);
 
     return new Response(
       JSON.stringify({
@@ -44,10 +66,10 @@ Deno.serve(async (req) => {
         filename: filename ?? "attachment",
         mimeType: mimeType ?? "application/octet-stream",
       }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
-  } catch (e) {
-    return new Response(JSON.stringify({ error: "gmail-download-attachment crashed", message: String(e) }), {
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e?.message ?? "Unknown error" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
