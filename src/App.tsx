@@ -5,6 +5,8 @@ import UploadInvoice from "@/pages/UploadInvoice";
 import Dashboard from "@/pages/Dashboard";
 import Landing from "@/pages/Landing";
 
+
+
 export default function App() {
   return (
     <Routes>
@@ -14,6 +16,8 @@ export default function App() {
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/invoice-upload" element={<UploadInvoice />} />
       <Route path="*" element={<Landing />} />         {/* prevents blank 404 */}
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+
     </Routes>
   );
 }
