@@ -57,23 +57,28 @@ export default function Auth() {
   };
 
   const handleGoogleSignIn = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: window.location.origin + "/dashboard",
-        scopes:
-          "openid email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly",
-        queryParams: {
-          access_type: "offline",
-          prompt: "consent select_account",
-        },
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo: `${window.location.origin}/auth/callback`,
+      queryParams: {
+        prompt: "select_account consent",
+        access_type: "offline",
       },
-    });
+      scopes:
+        "openid email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly",
+    },
+  });
 
-    if (error) {
-      toast({ variant: "destructive", title: "Sign in failed", description: error.message });
-    }
-  };
+  if (error) {
+    toast({
+      variant: "destructive",
+      title: "Sign in failed",
+      description: error.message,
+    });
+  }
+};
+
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
