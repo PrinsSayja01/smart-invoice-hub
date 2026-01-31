@@ -6,21 +6,19 @@ export default function AuthCallback() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Supabase client detects session in URL automatically
-    const go = async () => {
-      const { data } = await supabase.auth.getSession();
-      if (data.session) {
-        navigate("/dashboard", { replace: true });
-      } else {
-        navigate("/auth", { replace: true });
-      }
-    };
-    go();
+    (async () => {
+      // This exchanges the ?code=... from Google into a Supabase session
+      const { error } = await supabase.auth.exchangeCodeForSession(window.location.href);
+      // even if error, we navigate so user doesn't get stuck
+      navigate("/invoice-upload", { replace: true });
+      if (error) console.error("exchangeCodeForSession error:", error);
+    })();
   }, [navigate]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="text-sm text-gray-600">Completing login…</div>
+    <div style={{ padding: 24 }}>
+      <h2>Signing you in…</h2>
+      <p>Please wait.</p>
     </div>
   );
 }
