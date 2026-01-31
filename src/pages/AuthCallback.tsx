@@ -6,43 +6,19 @@ export default function AuthCallback() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    let mounted = true;
+    // Supabase reads token from URL automatically if detectSessionInUrl = true
+    (async () => {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) console.error("AuthCallback session error:", error);
 
-    const run = async () => {
-      try {
-        // After Google redirect, Supabase finalizes the session automatically
-        const { data, error } = await supabase.auth.getSession();
-
-        // If session exists -> go dashboard
-        if (!mounted) return;
-
-        if (error) {
-          console.error("AuthCallback getSession error:", error);
-          navigate("/auth", { replace: true });
-          return;
-        }
-
-        if (data?.session) {
-          navigate("/dashboard", { replace: true });
-        } else {
-          navigate("/auth", { replace: true });
-        }
-      } catch (e) {
-        console.error("AuthCallback unexpected:", e);
-        navigate("/auth", { replace: true });
-      }
-    };
-
-    run();
-
-    return () => {
-      mounted = false;
-    };
+      // Go where you want after login
+      navigate(data.session ? "/dashboard" : "/auth", { replace: true });
+    })();
   }, [navigate]);
 
   return (
     <div className="min-h-screen flex items-center justify-center">
-      <div className="text-sm text-muted-foreground">Finishing sign-in…</div>
+      <div className="text-sm text-gray-600">Finishing login…</div>
     </div>
   );
 }
