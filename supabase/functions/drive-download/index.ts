@@ -1,12 +1,27 @@
-import { corsHeaders } from "../_shared/cors.ts";
+/// <reference lib="deno.ns" />
 
-Deno.serve(async (req) => {
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { corsHeaders, handleCors } from "../_shared/cors.ts";
+import { requireUser } from "../_shared/auth.ts";
+import { arrayBufferToBase64 } from "../_shared/base64.ts";
+
+serve(async (req) => {
+  const cors = handleCors(req);
+  if (cors) return cors;
+
   try {
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { headers: corsHeaders });
+    const { user, error: authErr } = await requireUser(req);
+    if (authErr || !user) {
+      return new Response(JSON.stringify({ error: "Invalid JWT" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const { providerToken, fileId } = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => ({}));
+    const providerToken = body?.providerToken as string | undefined;
+    const fileId = body?.fileId as string | undefined;
+
     if (!providerToken || !fileId) {
       return new Response(JSON.stringify({ error: "Missing providerToken or fileId" }), {
         status: 400,
@@ -14,29 +29,31 @@ Deno.serve(async (req) => {
       });
     }
 
-    const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`;
+    // Download bytes
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+      {
+        headers: { Authorization: `Bearer ${providerToken}` },
+      }
+    );
 
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${providerToken}` },
-    });
-
-    if (!resp.ok) {
-      const text = await resp.text();
-      return new Response(JSON.stringify({ error: "Drive download failed", status: resp.status, details: text }), {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (!res.ok) {
+      const text = await res.text();
+      return new Response(
+        JSON.stringify({ error: "Drive download failed", status: res.status, details: text }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const buf = new Uint8Array(await resp.arrayBuffer());
-    const base64 = btoa(String.fromCharCode(...buf));
+    const buf = await res.arrayBuffer();
+    const base64 = arrayBufferToBase64(buf);
 
     return new Response(JSON.stringify({ base64 }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (e) {
-    return new Response(JSON.stringify({ error: "drive-download crashed", message: String(e) }), {
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e?.message ?? "Unknown error" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
