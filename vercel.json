@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
   "rewrites": [
     { "source": "/(.*)", "destination": "/" }
   ]
+=======
+  "rewrites": [{ "source": "/(.*)", "destination": "/" }]
+>>>>>>> 167cf85 (Initial commit: full project setup with Vite + React + shadcn/ui)
 }

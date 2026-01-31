@@ -1,3 +1,8 @@
+<<<<<<< HEAD
+=======
+project_id = "tkpogjvlepwrsswqzsdu"
+
+>>>>>>> 167cf85 (Initial commit: full project setup with Vite + React + shadcn/ui)
 [functions.drive-list]
 verify_jwt = true
 

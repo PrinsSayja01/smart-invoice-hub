@@ -1,9 +1,16 @@
+<<<<<<< HEAD
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
 
+=======
+>>>>>>> 167cf85 (Initial commit: full project setup with Vite + React + shadcn/ui)
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+<<<<<<< HEAD
+=======
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
+>>>>>>> 167cf85 (Initial commit: full project setup with Vite + React + shadcn/ui)
 
 @layer base {
   :root {
