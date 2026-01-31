@@ -1,21 +1,45 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useToast } from '@/hooks/use-toast';
-import { FileText, Mail, Lock, User, Loader2 } from 'lucide-react';
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/hooks/use-toast";
+import { FileText, Mail, Lock, User, Loader2 } from "lucide-react";
 
 export default function Auth() {
   const [loading, setLoading] = useState(false);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
   const navigate = useNavigate();
   const { toast } = useToast();
+
+  // ✅ After OAuth redirect, Supabase restores session.
+  // This makes sure user lands on dashboard.
+  useEffect(() => {
+    const check = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) navigate("/dashboard");
+    };
+    check();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) navigate("/dashboard");
+    });
+
+    return () => {
+      sub.subscription.unsubscribe();
+    };
+  }, [navigate]);
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,22 +50,22 @@ export default function Auth() {
       password,
       options: {
         data: { full_name: fullName },
-        emailRedirectTo: window.location.origin,
+        emailRedirectTo: `${window.location.origin}/dashboard`,
       },
     });
 
     if (error) {
       toast({
-        variant: 'destructive',
-        title: 'Sign up failed',
+        variant: "destructive",
+        title: "Sign up failed",
         description: error.message,
       });
     } else {
       toast({
-        title: 'Account created!',
-        description: 'Welcome to Invoice AI. Redirecting to dashboard...',
+        title: "Account created!",
+        description: "Welcome to Invoice AI. Redirecting to dashboard...",
       });
-      navigate('/dashboard');
+      navigate("/dashboard");
     }
 
     setLoading(false);
@@ -51,51 +75,61 @@ export default function Auth() {
     e.preventDefault();
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
 
     if (error) {
       toast({
-        variant: 'destructive',
-        title: 'Sign in failed',
+        variant: "destructive",
+        title: "Sign in failed",
         description: error.message,
       });
     } else {
       toast({
-        title: 'Welcome back!',
-        description: 'Redirecting to dashboard...',
+        title: "Welcome back!",
+        description: "Redirecting to dashboard...",
       });
-      navigate('/dashboard');
+      navigate("/dashboard");
     }
 
     setLoading(false);
   };
 
+  // ✅ FIXED Google Sign-In:
+  // - requests Drive + Gmail scopes (so provider_token works later)
+  // - forces account chooser (so you can select another Gmail)
+  // - forces consent (so scopes are really granted)
   const handleGoogleSignIn = async () => {
-    // keep redirect stable (avoid 404)
+    setLoading(true);
+
     const redirectTo = `${window.location.origin}/dashboard`;
 
     const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
+      provider: "google",
       options: {
         redirectTo,
-        // ✅ IMPORTANT: Drive + Gmail scopes for provider_token
         scopes:
-          'openid email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.readonly',
+          "openid email profile " +
+          "https://www.googleapis.com/auth/drive.readonly " +
+          "https://www.googleapis.com/auth/gmail.readonly",
         queryParams: {
-          access_type: 'offline',
-          // ✅ always show account chooser
-          prompt: 'consent select_account',
+          prompt: "consent select_account", // ✅ shows other accounts
+          access_type: "offline",
         },
       },
     });
 
     if (error) {
       toast({
-        variant: 'destructive',
-        title: 'Sign in failed',
+        variant: "destructive",
+        title: "Sign in failed",
         description: error.message,
       });
+      setLoading(false);
     }
+    // If success, Google redirects away — no need to setLoading(false) here.
   };
 
   return (
@@ -117,6 +151,7 @@ export default function Auth() {
             Intelligent invoice processing powered by AI
           </CardDescription>
         </CardHeader>
+
         <CardContent>
           <Tabs defaultValue="signin" className="space-y-4">
             <TabsList className="grid w-full grid-cols-2">
@@ -141,6 +176,7 @@ export default function Auth() {
                     />
                   </div>
                 </div>
+
                 <div className="space-y-2">
                   <Label htmlFor="signin-password">Password</Label>
                   <div className="relative">
@@ -156,8 +192,15 @@ export default function Auth() {
                     />
                   </div>
                 </div>
-                <Button type="submit" className="w-full gradient-primary" disabled={loading}>
-                  {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+
+                <Button
+                  type="submit"
+                  className="w-full gradient-primary"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : null}
                   Sign In
                 </Button>
               </form>
@@ -180,6 +223,7 @@ export default function Auth() {
                     />
                   </div>
                 </div>
+
                 <div className="space-y-2">
                   <Label htmlFor="signup-email">Email</Label>
                   <div className="relative">
@@ -195,6 +239,7 @@ export default function Auth() {
                     />
                   </div>
                 </div>
+
                 <div className="space-y-2">
                   <Label htmlFor="signup-password">Password</Label>
                   <div className="relative">
@@ -211,8 +256,15 @@ export default function Auth() {
                     />
                   </div>
                 </div>
-                <Button type="submit" className="w-full gradient-primary" disabled={loading}>
-                  {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+
+                <Button
+                  type="submit"
+                  className="w-full gradient-primary"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : null}
                   Create Account
                 </Button>
               </form>
@@ -224,7 +276,9 @@ export default function Auth() {
               <span className="w-full border-t" />
             </div>
             <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-card px-2 text-muted-foreground">Or continue with</span>
+              <span className="bg-card px-2 text-muted-foreground">
+                Or continue with
+              </span>
             </div>
           </div>
 
@@ -233,6 +287,7 @@ export default function Auth() {
             variant="outline"
             className="w-full"
             onClick={handleGoogleSignIn}
+            disabled={loading}
           >
             <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">
               <path
