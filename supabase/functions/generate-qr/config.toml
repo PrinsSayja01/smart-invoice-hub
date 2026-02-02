@@ -1,0 +1,2 @@
+[functions.generate-qr]
+verify_jwt = true

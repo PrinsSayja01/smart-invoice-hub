@@ -1,0 +1,28 @@
+project_id = "tkpogjvlepwrsswqzsdu"
+
+[functions.drive-list]
+verify_jwt = true
+
+[functions.drive-download]
+verify_jwt = true
+
+[functions.gmail-list]
+verify_jwt = true
+
+[functions.gmail-download-attachment]
+verify_jwt = true
+
+[functions.set-approval]
+verify_jwt = true
+
+[functions.risk-check]
+verify_jwt = true
+
+[functions.spend-analytics]
+verify_jwt = true
+
+[functions.esg-map]
+verify_jwt = true
+
+[functions.generate-qr]
+verify_jwt = true

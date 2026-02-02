@@ -1,0 +1,2 @@
+[functions.esg-map]
+verify_jwt = true

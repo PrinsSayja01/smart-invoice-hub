@@ -1,0 +1,2 @@
+[functions.set-approval]
+verify_jwt = true
