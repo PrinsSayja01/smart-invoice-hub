@@ -1,9 +1,11 @@
+import { type ReactNode, Suspense } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/lib/auth";
+
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
@@ -14,6 +16,7 @@ import Chat from "./pages/Chat";
 import Admin from "./pages/Admin";
 import Profile from "./pages/Profile";
 import NotFound from "./pages/NotFound";
+
 import FraudCenter from "./pages/FraudCenter";
 import SpendAnalytics from "./pages/SpendAnalytics";
 import ESGDashboard from "./pages/ESGDashboard";
@@ -21,180 +24,190 @@ import Payments from "./pages/Payments";
 import OpenBanking from "./pages/OpenBanking";
 import Cards from "./pages/Cards";
 import Reimbursements from "./pages/Reimbursements";
+
 import { Loader2 } from "lucide-react";
 
 const queryClient = new QueryClient();
 
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
+function FullscreenLoader() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+    </div>
+  );
+}
+
+function ProtectedRoute({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <Navigate to="/auth" replace />;
-  }
+  if (loading) return <FullscreenLoader />;
+  if (!user) return <Navigate to="/auth" replace />;
 
   return <>{children}</>;
 }
 
-function PublicRoute({ children }: { children: React.ReactNode }) {
+function PublicRoute({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
-  if (user) {
-    return <Navigate to="/dashboard" replace />;
-  }
+  if (loading) return <FullscreenLoader />;
+  if (user) return <Navigate to="/dashboard" replace />;
 
   return <>{children}</>;
 }
 
 function AppRoutes() {
   return (
-    <Routes>
-      <Route path="/" element={<Index />} />
-      <Route
-        path="/auth"
-        element={
-          <PublicRoute>
-            <Auth />
-          </PublicRoute>
-        }
-      />
-      <Route
-        path="/dashboard"
-        element={
-          <ProtectedRoute>
-            <Dashboard />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/upload"
-        element={
-          <ProtectedRoute>
-            <UploadInvoice />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/invoices"
-        element={
-          <ProtectedRoute>
-            <Invoices />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/reports"
-        element={
-          <ProtectedRoute>
-            <Reports />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/fraud"
-        element={
-          <ProtectedRoute>
-            <FraudCenter />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/spend"
-        element={
-          <ProtectedRoute>
-            <SpendAnalytics />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/esg"
-        element={
-          <ProtectedRoute>
-            <ESGDashboard />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/payments"
-        element={
-          <ProtectedRoute>
-            <Payments />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/open-banking"
-        element={
-          <ProtectedRoute>
-            <OpenBanking />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/cards"
-        element={
-          <ProtectedRoute>
-            <Cards />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/reimbursements"
-        element={
-          <ProtectedRoute>
-            <Reimbursements />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/chat"
-        element={
-          <ProtectedRoute>
-            <Chat />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/admin"
-        element={
-          <ProtectedRoute>
-            <Admin />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/profile"
-        element={
-          <ProtectedRoute>
-            <Profile />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard/settings"
-        element={
-          <ProtectedRoute>
-            <Profile />
-          </ProtectedRoute>
-        }
-      />
-      <Route path="*" element={<NotFound />} />
-    </Routes>
+    <Suspense fallback={<FullscreenLoader />}>
+      <Routes>
+        <Route path="/" element={<Index />} />
+
+        <Route
+          path="/auth"
+          element={
+            <PublicRoute>
+              <Auth />
+            </PublicRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/upload"
+          element={
+            <ProtectedRoute>
+              <UploadInvoice />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/invoices"
+          element={
+            <ProtectedRoute>
+              <Invoices />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/reports"
+          element={
+            <ProtectedRoute>
+              <Reports />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/fraud"
+          element={
+            <ProtectedRoute>
+              <FraudCenter />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/spend"
+          element={
+            <ProtectedRoute>
+              <SpendAnalytics />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/esg"
+          element={
+            <ProtectedRoute>
+              <ESGDashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/payments"
+          element={
+            <ProtectedRoute>
+              <Payments />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/open-banking"
+          element={
+            <ProtectedRoute>
+              <OpenBanking />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/cards"
+          element={
+            <ProtectedRoute>
+              <Cards />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/reimbursements"
+          element={
+            <ProtectedRoute>
+              <Reimbursements />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/chat"
+          element={
+            <ProtectedRoute>
+              <Chat />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/admin"
+          element={
+            <ProtectedRoute>
+              <Admin />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/profile"
+          element={
+            <ProtectedRoute>
+              <Profile />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/dashboard/settings"
+          element={
+            <ProtectedRoute>
+              <Profile />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </Suspense>
   );
 }
 
