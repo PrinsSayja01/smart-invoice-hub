@@ -1,0 +1,2 @@
+[functions.spend-analytics]
+verify_jwt = true
