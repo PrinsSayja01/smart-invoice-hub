@@ -261,5 +261,6 @@ export default function Auth() {
         </CardContent>
       </Card>
     </div>
+    
   );
 }

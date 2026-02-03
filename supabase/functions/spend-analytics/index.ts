@@ -63,6 +63,7 @@ Deno.serve(async (req) => {
     const forecastNextMonth =
       last3.reduce((s, x) => s + x, 0) / Math.max(1, last3.length);
 
+    
     return json(200, {
       ok: true,
       byVendor,

@@ -108,5 +108,6 @@ export default function ESGDashboard() {
         </Card>
       </div>
     </DashboardLayout>
+    
   );
 }

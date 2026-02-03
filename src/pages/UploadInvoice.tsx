@@ -271,7 +271,7 @@ export default function UploadInvoice() {
       setGmailMessages([]);
       setSelectedGmailMsg(null);
       setSelectedGmailAttachmentId(null);
-      setPipelineMeta(null);
+    setPipelineMeta(null);
       setShareUrl(''); // ✅ NEW
 
       toast({ title: 'Logged out', description: 'You have been signed out.' });
@@ -709,7 +709,17 @@ export default function UploadInvoice() {
 
       const pipeline = await runInvoicePipeline(text, downloadedFile);
       setPipelineMeta(pipeline);
+      const pipeline = await runInvoicePipeline(text, downloadedFile);
+      setPipelineMeta(pipeline);
       const aiExtractedData = await extractInvoiceDataFree(text, downloadedFile.name);
+      const merged: ExtractedData = {
+        vendor_name: pipeline.vendor_name ?? aiExtractedData.vendor_name,
+        invoice_number: pipeline.invoice_number ?? aiExtractedData.invoice_number,
+        invoice_date: pipeline.invoice_date ?? aiExtractedData.invoice_date,
+        total_amount: pipeline.total_amount != null ? String(pipeline.total_amount) : aiExtractedData.total_amount,
+        tax_amount: pipeline.tax_amount != null ? String(pipeline.tax_amount) : aiExtractedData.tax_amount,
+        currency: pipeline.currency ?? aiExtractedData.currency,
+      };
       const merged: ExtractedData = {
         vendor_name: pipeline.vendor_name ?? aiExtractedData.vendor_name,
         invoice_number: pipeline.invoice_number ?? aiExtractedData.invoice_number,
@@ -865,18 +875,6 @@ export default function UploadInvoice() {
       );
 
       const aiExtractedData = await extractInvoiceDataFree(text, downloadedFile.name);
-
-      const pipeline = await runInvoicePipeline(text, downloadedFile);
-      setPipelineMeta(pipeline);
-
-      const merged: ExtractedData = {
-        vendor_name: pipeline.vendor_name ?? aiExtractedData.vendor_name,
-        invoice_number: pipeline.invoice_number ?? aiExtractedData.invoice_number,
-        invoice_date: pipeline.invoice_date ?? aiExtractedData.invoice_date,
-        total_amount: pipeline.total_amount != null ? String(pipeline.total_amount) : aiExtractedData.total_amount,
-        tax_amount: pipeline.tax_amount != null ? String(pipeline.tax_amount) : aiExtractedData.tax_amount,
-        currency: pipeline.currency ?? aiExtractedData.currency,
-      };
 
       setProcessingSteps((prev) =>
         prev.map((s, i) => (i === 2 ? { ...s, status: 'complete' } : i === 3 ? { ...s, status: 'processing' } : s)),
@@ -1580,5 +1578,6 @@ export default function UploadInvoice() {
         )}
       </div>
     </div>
+    
   );
 }

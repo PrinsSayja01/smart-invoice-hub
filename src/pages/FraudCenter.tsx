@@ -113,5 +113,6 @@ export default function FraudCenter() {
         </Card>
       </div>
     </DashboardLayout>
+    
   );
 }

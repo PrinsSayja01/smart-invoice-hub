@@ -183,6 +183,7 @@ export default function Profile() {
           </CardContent>
         </Card>
       </div>
+      
     </DashboardLayout>
   );
 }

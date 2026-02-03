@@ -601,3 +601,4 @@ export default function Chat() {
     </DashboardLayout>
   );
 }
+

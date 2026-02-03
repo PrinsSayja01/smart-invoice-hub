@@ -108,6 +108,9 @@ export default function SpendAnalytics() {
           </CardContent>
         </Card>
       </div>
+      
+      
     </DashboardLayout>
   );
 }
+
