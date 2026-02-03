@@ -87,6 +87,7 @@ Deno.serve(async (req) => {
       anomalyFlags.push("suspicious_vendor");
       fraudScore += 0.15;
     }
+    
 
     fraudScore = Math.min(1, Math.max(0, fraudScore));
 

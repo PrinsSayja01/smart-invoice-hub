@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 
 export default function OpenBanking() {
   return (
+    
     <DashboardLayout>
       <div className="space-y-6">
         <div>
@@ -12,5 +13,6 @@ export default function OpenBanking() {
         <Card className="glass-card"><CardContent className="p-6 text-muted-foreground">Integration skeleton: implement bank connector in a Supabase Edge Function and store transactions.</CardContent></Card>
       </div>
     </DashboardLayout>
+
   );
 }

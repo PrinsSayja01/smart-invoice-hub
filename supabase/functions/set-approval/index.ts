@@ -60,6 +60,7 @@ Deno.serve(async (req) => {
       status,
       reasons,
     });
+    
     if (histErr) return json(400, { error: histErr.message });
 
     const { error: updErr } = await supabase
