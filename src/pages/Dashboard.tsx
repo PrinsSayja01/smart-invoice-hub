@@ -1,11 +1,24 @@
-import { useEffect, useState } from 'react';
-import { DashboardLayout } from '@/components/layout/DashboardLayout';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { useAuth } from '@/lib/auth';
-import { supabase } from '@/integrations/supabase/client';
-import { FileText, Upload, TrendingUp, AlertTriangle, Loader2 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from "react";
+import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/auth";
+import { supabase } from "@/integrations/supabase/client";
+import {
+  FileText,
+  Upload,
+  TrendingUp,
+  AlertTriangle,
+  Loader2,
+  Leaf,
+} from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 interface DashboardStats {
   totalInvoices: number;
@@ -15,9 +28,11 @@ interface DashboardStats {
   approvalsPending: number;
   emissionsTotal: number;
 }
+
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+
   const [stats, setStats] = useState<DashboardStats>({
     totalInvoices: 0,
     pendingReview: 0,
@@ -26,39 +41,78 @@ export default function Dashboard() {
     approvalsPending: 0,
     emissionsTotal: 0,
   });
+
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function fetchStats() {
-      if (!user) return;
+      // If auth is still initializing or user is logged out, avoid infinite spinner.
+      if (!user) {
+        if (!cancelled) setLoading(false);
+        return;
+      }
 
       try {
+        setLoading(true);
+
         const { data: invoices, error } = await supabase
-          .from('invoices')
-          .select('*')
-          .eq('user_id', user.id);
+          .from("invoices")
+          .select(
+            "total_amount, compliance_status, is_flagged, approval, co2e_estimate"
+          )
+          .eq("user_id", user.id);
 
         if (error) throw error;
 
         const totalInvoices = invoices?.length || 0;
-        const pendingReview = invoices?.filter(inv => inv.compliance_status === 'needs_review').length || 0;
-        const totalAmount = invoices?.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) || 0;
-        const flaggedInvoices = invoices?.filter(inv => inv.is_flagged).length || 0;
 
-        setStats({
-          totalInvoices,
-          pendingReview,
-          totalAmount,
-          flaggedInvoices,
-        });
-      } catch (error) {
-        console.error('Error fetching stats:', error);
+        const pendingReview =
+          invoices?.filter((inv: any) => inv.compliance_status === "needs_review")
+            .length || 0;
+
+        const totalAmount =
+          invoices?.reduce(
+            (sum: number, inv: any) => sum + (inv.total_amount || 0),
+            0
+          ) || 0;
+
+        const flaggedInvoices =
+          invoices?.filter((inv: any) => !!inv.is_flagged).length || 0;
+
+        const approvalsPending =
+          invoices?.filter((inv: any) =>
+            ["pending", "needs_info", "fail"].includes(inv.approval || "pending")
+          ).length || 0;
+
+        const emissionsTotal =
+          invoices?.reduce(
+            (sum: number, inv: any) => sum + (inv.co2e_estimate || 0),
+            0
+          ) || 0;
+
+        if (!cancelled) {
+          setStats({
+            totalInvoices,
+            pendingReview,
+            totalAmount,
+            flaggedInvoices,
+            approvalsPending,
+            emissionsTotal,
+          });
+        }
+      } catch (err) {
+        console.error("Error fetching stats:", err);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     fetchStats();
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
   if (loading) {
@@ -71,13 +125,29 @@ export default function Dashboard() {
     );
   }
 
+  if (!user) {
+    return (
+      <DashboardLayout>
+        <div className="p-6">
+          <h1 className="text-2xl font-bold">Please sign in</h1>
+          <p className="text-muted-foreground mt-2">
+            You need to log in to view your dashboard.
+          </p>
+          <div className="mt-4">
+            <Button onClick={() => navigate("/auth")}>Go to Login</Button>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-muted-foreground">
-            Welcome back! Here's an overview of your invoice processing.
+            Welcome back! Here&apos;s an overview of your invoice processing.
           </p>
         </div>
 
@@ -111,7 +181,7 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                ${stats.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                ${stats.totalAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
               </div>
               <p className="text-xs text-muted-foreground">Combined invoice value</p>
             </CardContent>
@@ -153,8 +223,6 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        </div>
-
         <div className="grid gap-4 md:grid-cols-2">
           <Card>
             <CardHeader>
@@ -162,26 +230,26 @@ export default function Dashboard() {
               <CardDescription>Common tasks and shortcuts</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button 
-                className="w-full justify-start" 
+              <Button
+                className="w-full justify-start"
                 variant="outline"
-                onClick={() => navigate('/dashboard/upload')}
+                onClick={() => navigate("/dashboard/upload")}
               >
                 <Upload className="mr-2 h-4 w-4" />
                 Upload New Invoice
               </Button>
-              <Button 
-                className="w-full justify-start" 
+              <Button
+                className="w-full justify-start"
                 variant="outline"
-                onClick={() => navigate('/dashboard/invoices')}
+                onClick={() => navigate("/dashboard/invoices")}
               >
                 <FileText className="mr-2 h-4 w-4" />
                 View All Invoices
               </Button>
-              <Button 
-                className="w-full justify-start" 
+              <Button
+                className="w-full justify-start"
                 variant="outline"
-                onClick={() => navigate('/dashboard/reports')}
+                onClick={() => navigate("/dashboard/reports")}
               >
                 <TrendingUp className="mr-2 h-4 w-4" />
                 View Reports
@@ -196,10 +264,11 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Upload your first invoice to get started. Our AI will automatically extract 
-                key information, detect potential issues, and help you manage your invoices efficiently.
+                Upload your first invoice to get started. Our AI will automatically
+                extract key information, detect potential issues, and help you manage
+                your invoices efficiently.
               </p>
-              <Button onClick={() => navigate('/dashboard/upload')}>
+              <Button onClick={() => navigate("/dashboard/upload")}>
                 <Upload className="mr-2 h-4 w-4" />
                 Upload Your First Invoice
               </Button>
