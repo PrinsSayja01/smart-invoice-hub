@@ -63,13 +63,20 @@ export default function Payments() {
   }, [user]);
 
   const generateQR = async (invoiceId: string) => {
+    // Ensure JWT is explicitly attached (fix 401 on Edge Function)
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess.session?.access_token || null;
+
     const { data, error } = await supabase.functions.invoke("generate-qr", {
       body: { invoiceId, method: "sepa" },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
+
     if (error) {
       toast({ variant: "destructive", title: "QR generation failed", description: error.message });
       return;
     }
+
     toast({ title: "QR generated", description: "Payment payload stored on invoice." });
     await load();
     return data;
@@ -104,13 +111,14 @@ export default function Payments() {
                         <div>
                           <p className="font-medium">{inv.vendor_name || "Unknown Vendor"}</p>
                           <p className="text-sm text-muted-foreground">
-                            #{inv.invoice_number || "-"} • {(inv.currency || "€")} {Number(inv.total_amount ?? 0).toLocaleString()}
+                            #{inv.invoice_number || "-"} • {(inv.currency || "EUR")}{" "}
+                            {Number(inv.total_amount ?? 0).toLocaleString()}
                           </p>
                           {inv.payment_qr_string && (
                             <p className="text-xs text-muted-foreground break-all mt-2">{inv.payment_qr_string}</p>
                           )}
                         </div>
-                        <Button size="sm" onClick={() => generateQR(inv.id)}>
+                        <Button size="sm" onClick={() => generateQR(inv.id)} disabled={!user}>
                           <QrCode className="h-4 w-4 mr-2" /> QR
                         </Button>
                       </div>
@@ -129,10 +137,13 @@ export default function Payments() {
                           <div>
                             <p className="font-medium">Payment</p>
                             <p className="text-sm text-muted-foreground">
-                              {(p.currency || "€")} {Number(p.amount ?? 0).toLocaleString()} • Invoice: {p.invoice_id || "—"}
+                              {(p.currency || "EUR")} {Number(p.amount ?? 0).toLocaleString()} • Invoice:{" "}
+                              {p.invoice_id || "—"}
                             </p>
                           </div>
-                          <Badge variant="secondary" className="capitalize">{p.status}</Badge>
+                          <Badge variant="secondary" className="capitalize">
+                            {p.status}
+                          </Badge>
                         </div>
                       ))
                     )}
@@ -144,6 +155,5 @@ export default function Payments() {
         </Card>
       </div>
     </DashboardLayout>
-    
   );
 }

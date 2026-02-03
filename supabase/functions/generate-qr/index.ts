@@ -1,3 +1,4 @@
+// supabase/functions/generate-qr/index.ts
 import { corsHeaders } from "../_shared/cors.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.90.1";
 
@@ -9,22 +10,25 @@ function json(status: number, data: unknown) {
     headers: {
       ...corsHeaders,
       "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers":
+        "authorization, x-client-info, apikey, content-type",
       "Content-Type": "application/json",
     },
   });
 }
 
-/**
- * Minimal QR/payment payload generator:
- * - Creates/updates a payment record (public.payments)
- * - Saves invoices.payment_payload + invoices.payment_qr_string
- * Note: This returns a *string payload*; front-end can render a QR image.
- */
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS")
+  if (req.method === "OPTIONS") {
     return new Response("ok", {
-      headers: { ...corsHeaders, "Access-Control-Allow-Methods": "POST, OPTIONS" },
+      headers: {
+        ...corsHeaders,
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers":
+          "authorization, x-client-info, apikey, content-type",
+      },
     });
+  }
+
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
 
   try {
@@ -33,12 +37,16 @@ Deno.serve(async (req) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return json(500, { error: "Missing SUPABASE_URL or SUPABASE_ANON_KEY env" });
+    }
+
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } },
     });
 
-    const { data: userRes } = await supabase.auth.getUser();
-    if (!userRes?.user) return json(401, { error: "Unauthorized" });
+    const { data: userRes, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userRes?.user) return json(401, { error: "Unauthorized" });
     const userId = userRes.user.id;
 
     const body = (await req.json().catch(() => ({}))) as Body;
@@ -58,7 +66,6 @@ Deno.serve(async (req) => {
     const amount = Number(inv.total_amount ?? 0);
     const currency = inv.currency ?? "EUR";
 
-    // Build a simple payload string (front-end renders QR)
     const payload = {
       method,
       invoiceId,
@@ -72,13 +79,13 @@ Deno.serve(async (req) => {
 
     const qrString = `PAYMENT|${method.toUpperCase()}|${invoiceId}|${amount.toFixed(2)}|${currency}`;
 
-    // Create or update payment record
-    const { data: existing } = await supabase
+    const { data: existing, error: exErr } = await supabase
       .from("payments")
       .select("id")
       .eq("user_id", userId)
       .eq("invoice_id", invoiceId)
       .maybeSingle();
+    if (exErr) return json(400, { error: exErr.message });
 
     if (existing?.id) {
       const { error: upPayErr } = await supabase
@@ -105,6 +112,7 @@ Deno.serve(async (req) => {
         updated_at: new Date().toISOString(),
       })
       .eq("id", invoiceId);
+
     if (updInvErr) return json(400, { error: updInvErr.message });
 
     return json(200, { ok: true, invoiceId, payload, qrString });

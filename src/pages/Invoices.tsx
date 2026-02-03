@@ -4,35 +4,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import {  Table,  TableBody,  TableCell,  TableHead,  TableHeader,  TableRow,} from "@/components/ui/table";
+import {  Dialog,  DialogContent,  DialogDescription,  DialogHeader,  DialogTitle,} from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth";
-import {
-  Search,
-  FileText,
-  Download,
-  Eye,
-  Trash2,
-  AlertTriangle,
-  CheckCircle2,
-  Clock,
-  Loader2,
-  ExternalLink,
-} from "lucide-react";
+import {  Search,  FileText,  Download,  Eye,  Trash2,  AlertTriangle,  CheckCircle2,  Clock,  Loader2,  ExternalLink,} from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 
@@ -58,26 +35,17 @@ interface Invoice {
   flag_reason: string | null;
 
   created_at: string;
-
-  // Advanced fields (may exist depending on migration)
-  doc_class?: string | null;
-  direction?: string | null;
-  jurisdiction?: string | null;
-  vat_rate?: number | null;
-  approval?: string | null;
-  payment_qr_string?: string | null;
-  co2e_estimate?: number | null;
-  fraud_score?: number | null;
-  anomaly_flags?: string[] | null;
 }
 
 export default function Invoices() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [view, setView] = useState<"all" | "flagged" | "needs_approval" | "needs_info">("all");
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [savingApproval, setSavingApproval] = useState(false);
@@ -86,6 +54,18 @@ export default function Invoices() {
     if (user) fetchInvoices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
+
+  // Allow quick links like /dashboard/invoices?flagged=1
+  useEffect(() => {
+    const flagged = searchParams.get("flagged");
+    const needsApproval = searchParams.get("needsApproval");
+    const needsInfo = searchParams.get("needsInfo");
+
+    if (flagged === "1") setView("flagged");
+    else if (needsApproval === "1") setView("needs_approval");
+    else if (needsInfo === "1") setView("needs_info");
+    else setView("all");
+  }, [searchParams]);
 
   const fetchInvoices = async () => {
     setLoading(true);
@@ -134,36 +114,22 @@ export default function Invoices() {
     }
   };
 
-  const setApproval = async (
-    invoiceId: string,
-    status: "pass" | "fail" | "needs_info" | "pending"
-  ) => {
+  const setApproval = async (invoiceId: string, status: "pass" | "fail" | "needs_info" | "pending") => {
     try {
       setSavingApproval(true);
-      const reasons =
-        status === "needs_info"
-          ? ((selectedInvoice as any)?.needs_info_fields as string[] | undefined) ??
-            ["missing_fields"]
-          : [];
-
+      const reasons = status === "needs_info" ? (selectedInvoice as any)?.needs_info_fields ?? ["missing_fields"] : [];
       const { data, error } = await supabase.functions.invoke("set-approval", {
         body: { invoiceId, status, reasons },
       });
       if (error) throw error;
 
+      // Optimistically update list + selected invoice
       setInvoices((prev) =>
-        prev.map((inv) =>
-          inv.id === invoiceId ? ({ ...inv, approval: status } as any) : inv
-        )
+        prev.map((inv) => (inv.id === invoiceId ? ({ ...inv, approval: status } as any) : inv)),
       );
-      setSelectedInvoice((prev) =>
-        prev && prev.id === invoiceId ? ({ ...prev, approval: status } as any) : prev
-      );
+      setSelectedInvoice((prev) => (prev && prev.id === invoiceId ? ({ ...prev, approval: status } as any) : prev));
 
-      toast({
-        title: "Approval updated",
-        description: `Marked as ${status.replace("_", " ")}`,
-      });
+      toast({ title: "Approval updated", description: `Marked as ${status.replace('_', ' ')}` });
       return data;
     } catch (e: any) {
       console.error(e);
@@ -177,39 +143,37 @@ export default function Invoices() {
     }
   };
 
-  const runRiskCheck = async (invoiceId: string) => {
-    try {
-      const { data, error } = await supabase.functions.invoke("risk-check", {
-        body: { invoiceId },
-      });
-      if (error) throw error;
-
-      toast({
-        title: "Risk check complete",
-        description: "Updated fraud score and anomaly flags.",
-      });
-      await fetchInvoices();
-      return data;
-    } catch (e: any) {
-      toast({
-        variant: "destructive",
-        title: "Risk check failed",
-        description: e?.message || "Unknown error",
-      });
-    }
-  };
-
   const filteredInvoices = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return invoices;
+    let list = invoices;
 
-    return invoices.filter((inv) => {
+    if (view === "flagged") {
+      list = list.filter((i) => !!i.is_flagged);
+    } else if (view === "needs_approval") {
+      list = list.filter(
+        (i) =>
+          !!i.needs_human_approval ||
+          (String(i.currency || "").toUpperCase() === "EUR" && Number(i.total_amount || 0) > 5000),
+      );
+    } else if (view === "needs_info") {
+      list = list.filter(
+        (i) =>
+          String(i.approval || "").toLowerCase() === "needs_info" ||
+          String(i.compliance_status || "").toLowerCase() === "needs_review" ||
+          !i.tax_amount ||
+          Number(i.tax_amount || 0) <= 0,
+      );
+    }
+
+    if (!q) return list;
+
+    return list.filter((inv) => {
       const vendor = (inv.vendor_name || "").toLowerCase();
       const number = (inv.invoice_number || "").toLowerCase();
       const name = (inv.file_name || "").toLowerCase();
       return vendor.includes(q) || number.includes(q) || name.includes(q);
     });
-  }, [invoices, searchQuery]);
+  }, [invoices, searchQuery, view]);
 
   const getRiskBadge = (risk: string | null) => {
     switch (risk) {
@@ -282,6 +246,37 @@ export default function Invoices() {
     return `${cur} ${Number(amount).toLocaleString()}`;
   };
 
+  const viewCounts = useMemo(() => {
+    const flagged = invoices.filter((i) => !!i.is_flagged).length;
+    const needsApproval = invoices.filter((i) => {
+      const eur = (i.currency || "").toUpperCase() === "EUR";
+      const amt = Number(i.total_amount ?? 0);
+      return !!(i.needs_human_approval || (eur && amt > 5000));
+    }).length;
+    const needsInfo = invoices.filter((i) =>
+      ["needs_info", "needs_review", "unknown"].includes(String(i.approval || "").toLowerCase()),
+    ).length;
+
+    return {
+      all: invoices.length,
+      flagged,
+      needsApproval,
+      needsInfo,
+    };
+  }, [invoices]);
+
+  const setViewAndParams = (next: typeof view) => {
+    setView(next);
+    const params = new URLSearchParams(searchParams);
+    params.delete("flagged");
+    params.delete("needsApproval");
+    params.delete("needsInfo");
+    if (next === "flagged") params.set("flagged", "1");
+    if (next === "needs_approval") params.set("needsApproval", "1");
+    if (next === "needs_info") params.set("needsInfo", "1");
+    setSearchParams(params, { replace: true });
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -302,6 +297,38 @@ export default function Invoices() {
               className="pl-9"
             />
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant={view === "all" ? "default" : "outline"}
+            onClick={() => setViewAndParams("all")}
+          >
+            All <span className="ml-2 opacity-80">({viewCounts.all})</span>
+          </Button>
+          <Button
+            size="sm"
+            variant={view === "flagged" ? "default" : "outline"}
+            onClick={() => setViewAndParams("flagged")}
+            className={view === "flagged" ? "" : "border-red-200 text-red-700 hover:text-red-700"}
+          >
+            Flagged <span className="ml-2 opacity-80">({viewCounts.flagged})</span>
+          </Button>
+          <Button
+            size="sm"
+            variant={view === "needs_approval" ? "default" : "outline"}
+            onClick={() => setViewAndParams("needs_approval")}
+          >
+            Human approval <span className="ml-2 opacity-80">({viewCounts.needsApproval})</span>
+          </Button>
+          <Button
+            size="sm"
+            variant={view === "needs_info" ? "default" : "outline"}
+            onClick={() => setViewAndParams("needs_info")}
+          >
+            Needs info <span className="ml-2 opacity-80">({viewCounts.needsInfo})</span>
+          </Button>
         </div>
 
         <Card className="glass-card">
@@ -332,6 +359,7 @@ export default function Invoices() {
                       <TableHead>Risk</TableHead>
                       <TableHead>Compliance</TableHead>
                       <TableHead>CO₂e</TableHead>
+                      <TableHead>Dup</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -357,13 +385,13 @@ export default function Invoices() {
 
                         <TableCell>
                           <Badge variant="secondary" className="capitalize">
-                            {String(invoice.doc_class || "other").replace("_", " ")}
+                            {String((invoice as any).doc_class || "other").replace("_", " ")}
                           </Badge>
                         </TableCell>
 
                         <TableCell>
                           <Badge variant="outline" className="capitalize">
-                            {String(invoice.direction || "unknown")}
+                            {String((invoice as any).direction || "unknown")}
                           </Badge>
                         </TableCell>
 
@@ -382,15 +410,15 @@ export default function Invoices() {
                         <TableCell>
                           <Badge
                             variant={
-                              invoice.approval === "pass"
+                              (invoice as any).approval === "pass"
                                 ? "default"
-                                : invoice.approval === "fail"
+                                : (invoice as any).approval === "fail"
                                 ? "destructive"
                                 : "secondary"
                             }
                             className="capitalize"
                           >
-                            {String(invoice.approval || "pending").replace("_", " ")}
+                            {String((invoice as any).approval || "pending").replace("_", " ")}
                           </Badge>
                         </TableCell>
 
@@ -399,12 +427,10 @@ export default function Invoices() {
                         <TableCell>{getComplianceBadge(invoice.compliance_status)}</TableCell>
 
                         <TableCell className="text-sm tabular-nums">
-                          {invoice.co2e_estimate != null
-                            ? Number(invoice.co2e_estimate).toFixed(2)
-                            : "—"}
+                          {(invoice as any).co2e_estimate != null ? Number((invoice as any).co2e_estimate).toFixed(2) : "—"}
                         </TableCell>
 
-                        <TableCell className="text-right">
+                        <TableCell>
                           <div className="flex items-center justify-end gap-2">
                             <Button
                               variant="ghost"
@@ -423,15 +449,6 @@ export default function Invoices() {
                               disabled={!invoice.file_url}
                             >
                               <Download className="h-4 w-4" />
-                            </Button>
-
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => runRiskCheck(invoice.id)}
-                              title="Run risk check"
-                            >
-                              <AlertTriangle className="h-4 w-4" />
                             </Button>
 
                             <Button
@@ -458,6 +475,7 @@ export default function Invoices() {
           </CardContent>
         </Card>
 
+        {/* Invoice Detail Dialog */}
         <Dialog open={!!selectedInvoice} onOpenChange={() => setSelectedInvoice(null)}>
           <DialogContent className="max-w-lg">
             <DialogHeader>
@@ -489,9 +507,7 @@ export default function Invoices() {
 
                   <div>
                     <p className="text-sm text-muted-foreground">Type</p>
-                    <p className="font-medium capitalize">
-                      {selectedInvoice.invoice_type || "-"}
-                    </p>
+                    <p className="font-medium capitalize">{selectedInvoice.invoice_type || "-"}</p>
                   </div>
 
                   <div>
@@ -520,41 +536,35 @@ export default function Invoices() {
                   )}
                   <Badge
                     variant={
-                      selectedInvoice.approval === "pass"
+                      (selectedInvoice as any).approval === "pass"
                         ? "default"
-                        : selectedInvoice.approval === "fail"
+                        : (selectedInvoice as any).approval === "fail"
                         ? "destructive"
                         : "secondary"
                     }
                     className="capitalize"
                   >
-                    Approval: {String(selectedInvoice.approval || "pending").replace("_", " ")}
+                    Approval: {String((selectedInvoice as any).approval || "pending").replace("_", " ")}
                   </Badge>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 pt-2">
                   <div>
                     <p className="text-sm text-muted-foreground">Document class</p>
-                    <p className="font-medium capitalize">
-                      {String(selectedInvoice.doc_class || "other").replace("_", " ")}
-                    </p>
+                    <p className="font-medium capitalize">{String((selectedInvoice as any).doc_class || "other").replace("_", " ")}</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Direction</p>
-                    <p className="font-medium capitalize">
-                      {String(selectedInvoice.direction || "unknown")}
-                    </p>
+                    <p className="font-medium capitalize">{String((selectedInvoice as any).direction || "unknown")}</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Jurisdiction</p>
-                    <p className="font-medium">{selectedInvoice.jurisdiction || "—"}</p>
+                    <p className="font-medium">{(selectedInvoice as any).jurisdiction || "—"}</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">VAT rate</p>
                     <p className="font-medium">
-                      {selectedInvoice.vat_rate != null
-                        ? `${(Number(selectedInvoice.vat_rate) * 100).toFixed(2)}%`
-                        : "—"}
+                      {(selectedInvoice as any).vat_rate != null ? `${(Number((selectedInvoice as any).vat_rate) * 100).toFixed(2)}%` : "—"}
                     </p>
                   </div>
                 </div>
@@ -567,11 +577,7 @@ export default function Invoices() {
                       disabled={savingApproval}
                       onClick={() => setApproval(selectedInvoice.id, "pass")}
                     >
-                      {savingApproval ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <CheckCircle2 className="h-4 w-4 mr-2" />
-                      )}
+                      {savingApproval ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
                       Pass
                     </Button>
                     <Button
@@ -580,11 +586,7 @@ export default function Invoices() {
                       disabled={savingApproval}
                       onClick={() => setApproval(selectedInvoice.id, "needs_info")}
                     >
-                      {savingApproval ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Clock className="h-4 w-4 mr-2" />
-                      )}
+                      {savingApproval ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4 mr-2" />}
                       Needs info
                     </Button>
                     <Button
@@ -593,33 +595,24 @@ export default function Invoices() {
                       disabled={savingApproval}
                       onClick={() => setApproval(selectedInvoice.id, "fail")}
                     >
-                      {savingApproval ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <AlertTriangle className="h-4 w-4 mr-2" />
-                      )}
+                      {savingApproval ? <Loader2 className="h-4 w-4 animate-spin" /> : <AlertTriangle className="h-4 w-4 mr-2" />}
                       Fail
                     </Button>
                   </div>
 
-                  {selectedInvoice.payment_qr_string && (
+                  {(selectedInvoice as any).payment_qr_string && (
                     <div className="p-3 rounded-lg bg-muted/40 border">
                       <p className="text-sm font-medium mb-1">Payment payload</p>
                       <p className="text-xs text-muted-foreground break-all">
-                        {String(selectedInvoice.payment_qr_string)}
+                        {String((selectedInvoice as any).payment_qr_string)}
                       </p>
                       <div className="pt-2">
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={async () => {
-                            await navigator.clipboard.writeText(
-                              String(selectedInvoice.payment_qr_string)
-                            );
-                            toast({
-                              title: "Copied",
-                              description: "Payment payload copied to clipboard.",
-                            });
+                            await navigator.clipboard.writeText(String((selectedInvoice as any).payment_qr_string));
+                            toast({ title: "Copied", description: "Payment payload copied to clipboard." });
                           }}
                         >
                           Copy
@@ -663,4 +656,3 @@ export default function Invoices() {
     </DashboardLayout>
   );
 }
-
