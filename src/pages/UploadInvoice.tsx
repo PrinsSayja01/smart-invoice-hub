@@ -171,6 +171,186 @@ function extractHeuristic(text: string, fileName: string): ExtractedData {
   };
 }
 
+// -----------------------------
+// Normalization + policy helpers
+// -----------------------------
+const CONF_THRESHOLD = 0.7; // below this => NEEDS_INFO
+
+type PipelineNormalized = {
+  vendor_name?: string;
+  invoice_number?: string;
+  invoice_date?: string;
+  total_amount?: number | string | null;
+  tax_amount?: number | string | null;
+  currency?: string;
+  approval?: string;
+  approval_confidence?: number;
+  approval_reasons?: string[];
+  needs_info_fields?: string[];
+  compliance_status?: string;
+  risk_score?: string;
+  citations?: any[];
+  evidence?: any[];
+  human_review_required?: boolean;
+};
+
+const firstDefined = <T,>(...vals: T[]) => vals.find((v) => v !== undefined && v !== null && String(v).trim() !== '');
+
+const normalizePipeline = (p: any): PipelineNormalized => {
+  if (!p || typeof p !== 'object') return {};
+
+  const vendor_name = firstDefined(
+    p.vendor_name,
+    p.vendorName,
+    p.vendor,
+    p.supplier,
+    p.seller,
+    p.from,
+    p.merchant,
+  ) as any;
+
+  const invoice_number = firstDefined(
+    p.invoice_number,
+    p.invoiceNumber,
+    p.invoice_no,
+    p.invoiceNo,
+    p.number,
+    p.inv_no,
+  ) as any;
+
+  const invoice_date = firstDefined(
+    p.invoice_date,
+    p.invoiceDate,
+    p.date,
+    p.invoice_dt,
+  ) as any;
+
+  const currency = (firstDefined(p.currency, p.curr, p.currency_code, p.currencyCode) as any) || undefined;
+
+  const total_amount = firstDefined(
+    p.total_amount,
+    p.totalAmount,
+    p.amount_total,
+    p.amountTotal,
+    p.grand_total,
+    p.grandTotal,
+  ) as any;
+
+  const tax_amount = firstDefined(
+    p.tax_amount,
+    p.taxAmount,
+    p.vat_amount,
+    p.vatAmount,
+    p.vat,
+  ) as any;
+
+  const citations =
+    (Array.isArray(p.citations) && p.citations) ||
+    (Array.isArray(p.doc_citations) && p.doc_citations) ||
+    (Array.isArray(p.evidence) && p.evidence) ||
+    (Array.isArray(p.retrieval_citations) && p.retrieval_citations) ||
+    (Array.isArray(p?.retrieval?.citations) && p.retrieval.citations) ||
+    [];
+
+  const evidence =
+    (Array.isArray(p.evidence) && p.evidence) ||
+    (Array.isArray(p?.retrieval?.chunks) && p.retrieval.chunks) ||
+    [];
+
+  const approval = (firstDefined(p.approval, p.decision, p.status) as any) || undefined;
+
+  const approval_confidence = Number(
+    firstDefined(p.approval_confidence, p.confidence, p.decision_confidence, p.score) as any,
+  );
+
+  const approval_reasons =
+    (Array.isArray(p.approval_reasons) && p.approval_reasons) ||
+    (Array.isArray(p.reasons) && p.reasons) ||
+    [];
+
+  const needs_info_fields =
+    (Array.isArray(p.needs_info_fields) && p.needs_info_fields) ||
+    (Array.isArray(p.missing_fields) && p.missing_fields) ||
+    [];
+
+  const compliance_status = (firstDefined(p.compliance_status, p.complianceStatus) as any) || undefined;
+  const risk_score = (firstDefined(p.risk_score, p.riskScore) as any) || undefined;
+
+  // Human approval rule (> €5000)
+  const totalNum = typeof total_amount === 'string' ? Number(total_amount) : Number(total_amount ?? 0);
+  const human_review_required = (currency === 'EUR' || currency === '€') && Number.isFinite(totalNum) && totalNum > 5000;
+
+  return {
+    vendor_name,
+    invoice_number,
+    invoice_date,
+    total_amount,
+    tax_amount,
+    currency,
+    approval,
+    approval_confidence: Number.isFinite(approval_confidence) ? approval_confidence : undefined,
+    approval_reasons,
+    needs_info_fields,
+    compliance_status,
+    risk_score,
+    citations,
+    evidence,
+    human_review_required,
+  };
+};
+
+const hasEvidence = (p: PipelineNormalized) => {
+  const c = Array.isArray(p.citations) ? p.citations.length : 0;
+  const e = Array.isArray(p.evidence) ? p.evidence.length : 0;
+  return c > 0 || e > 0;
+};
+
+const enforcePolicy = (p: PipelineNormalized) => {
+  const out: PipelineNormalized = { ...p };
+  const reasons = Array.isArray(out.approval_reasons) ? [...out.approval_reasons] : [];
+
+  // 1) No evidence => cannot PASS
+  if ((out.approval || '').toLowerCase() === 'pass' && !hasEvidence(out)) {
+    out.approval = 'needs_info';
+    reasons.push('No evidence/citations available from the document, so invoice cannot be auto-approved.');
+  }
+
+  // 2) Low confidence => NEEDS_INFO
+  if (Number.isFinite(out.approval_confidence as any) && (out.approval_confidence as number) < CONF_THRESHOLD) {
+    out.approval = 'needs_info';
+    reasons.push(`Low confidence (${(out.approval_confidence as number).toFixed(2)}) — requesting additional info.`);
+  }
+
+  // 3) Policy violation => FAIL (frontend guard; backend must enforce too)
+  const compliance = (out.compliance_status || '').toLowerCase();
+  if (compliance === 'fail') {
+    out.approval = 'fail';
+    reasons.push('Compliance checks failed.');
+  }
+  const risk = (out.risk_score || '').toLowerCase();
+  if (risk === 'high') {
+    out.approval = 'fail';
+    reasons.push('High fraud/anomaly risk detected.');
+  }
+
+  // 10) Missing VAT => NEEDS_INFO (for EUR / EU invoices)
+  const taxNum = typeof out.tax_amount === 'string' ? Number(out.tax_amount) : Number(out.tax_amount ?? 0);
+  if ((out.currency === 'EUR' || out.currency === '€') && (!Number.isFinite(taxNum) || taxNum <= 0)) {
+    out.approval = out.approval === 'fail' ? 'fail' : 'needs_info';
+    out.needs_info_fields = Array.from(new Set([...(out.needs_info_fields || []), 'tax_amount']));
+    reasons.push('VAT/tax is missing or invalid — requesting clarification.');
+  }
+
+  // 8) Invoice > €5000 => human approval required
+  if (out.human_review_required) {
+    if ((out.approval || '').toLowerCase() === 'pass') out.approval = 'needs_human';
+    reasons.push('Invoice total exceeds €5000 — human approval required.');
+  }
+
+  out.approval_reasons = Array.from(new Set(reasons));
+  return out;
+};
+
 export default function UploadInvoice() {
   const { toast } = useToast();
 
@@ -234,6 +414,21 @@ export default function UploadInvoice() {
 
   const isAuthenticated = !!session?.user;
   const userEmail = session?.user?.email || '';
+
+  // --- Auth helpers for Edge Functions (fix 401 on localhost) ---
+  const getAccessToken = useCallback(async () => {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token || null;
+  }, []);
+
+  const invokeAuthed = useCallback(
+    async (fnName: string, body: any) => {
+      const token = await getAccessToken();
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+      return supabase.functions.invoke(fnName, { body, headers });
+    },
+    [getAccessToken],
+  );
 
   // ✅ Google Login (always show chooser)
   const handleGoogleSignIn = async () => {
@@ -444,15 +639,14 @@ export default function UploadInvoice() {
 
   // ✅ NEW: Call Edge Function for advanced extraction/classification/compliance/agent decision
   const runInvoicePipeline = async (text: string, f: File) => {
-    const { data, error } = await supabase.functions.invoke('process-invoice', {
-      body: {
+    const currencyGuess = detectCurrency(text);
+    const { data, error } = await invokeAuthed('process-invoice', {
         fileName: f.name,
         fileType: f.type,
         extractedText: text,
         // You can set this from Admin later; default inference happens server-side too
-        jurisdiction: extractedData?.currency === 'EUR' ? 'EU' : undefined,
-      },
-    });
+        jurisdiction: currencyGuess === 'EUR' ? 'EU' : undefined,
+      });
 
     if (error) throw error;
     if (!data) throw new Error('process-invoice returned empty response');
@@ -547,17 +741,35 @@ export default function UploadInvoice() {
         prev.map((s, i) => (i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s)),
       );
 
-      const pipeline = await runInvoicePipeline(text, file);
-      setPipelineMeta(pipeline);
+            let pipelineRaw: any = null;
+      let pipelineNorm: PipelineNormalized = {};
+      try {
+        pipelineRaw = await runInvoicePipeline(text, file);
+        pipelineNorm = enforcePolicy(normalizePipeline(pipelineRaw));
+        // keep original response + normalized fields for saving/audit
+        setPipelineMeta({ ...pipelineRaw, ...pipelineNorm });
+      } catch (e) {
+        // pipeline is optional; keep working with heuristic extraction
+        console.warn('process-invoice pipeline failed, falling back to heuristic extraction:', e);
+        setPipelineMeta(null);
+      }
+
       const aiExtractedData = await extractInvoiceDataFree(text, file.name);
-      // overwrite with pipeline values if present
+
+      // overwrite with pipeline values if present (normalized)
       const merged: ExtractedData = {
-        vendor_name: pipeline.vendor_name ?? aiExtractedData.vendor_name,
-        invoice_number: pipeline.invoice_number ?? aiExtractedData.invoice_number,
-        invoice_date: pipeline.invoice_date ?? aiExtractedData.invoice_date,
-        total_amount: pipeline.total_amount != null ? String(pipeline.total_amount) : aiExtractedData.total_amount,
-        tax_amount: pipeline.tax_amount != null ? String(pipeline.tax_amount) : aiExtractedData.tax_amount,
-        currency: pipeline.currency ?? aiExtractedData.currency,
+        vendor_name: (pipelineNorm.vendor_name as string) ?? aiExtractedData.vendor_name,
+        invoice_number: (pipelineNorm.invoice_number as string) ?? aiExtractedData.invoice_number,
+        invoice_date: (pipelineNorm.invoice_date as string) ?? aiExtractedData.invoice_date,
+        total_amount:
+          pipelineNorm.total_amount != null
+            ? String(pipelineNorm.total_amount)
+            : aiExtractedData.total_amount,
+        tax_amount:
+          pipelineNorm.tax_amount != null
+            ? String(pipelineNorm.tax_amount)
+            : aiExtractedData.tax_amount,
+        currency: (pipelineNorm.currency as string) ?? aiExtractedData.currency,
       };
 
       setProcessingSteps((prev) =>
@@ -610,9 +822,7 @@ export default function UploadInvoice() {
     try {
       setUploading(true);
 
-      const { data, error } = await supabase.functions.invoke('drive-list', {
-        body: { providerToken },
-      });
+      const { data, error } = await invokeAuthed('drive-list', { providerToken });
 
       if (error) throw error;
 
@@ -675,9 +885,7 @@ export default function UploadInvoice() {
       const fileMetadata = driveFiles.find((f) => f.id === selectedDriveFile);
       if (!fileMetadata) throw new Error('Selected file not found');
 
-      const { data, error } = await supabase.functions.invoke('drive-download', {
-        body: { providerToken, fileId: selectedDriveFile },
-      });
+      const { data, error } = await invokeAuthed('drive-download', { providerToken, fileId: selectedDriveFile });
 
       if (error) throw error;
       if (!data?.base64) throw new Error('Drive download failed: missing base64');
@@ -707,16 +915,28 @@ export default function UploadInvoice() {
         prev.map((s, i) => (i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s)),
       );
 
-      const pipeline = await runInvoicePipeline(text, downloadedFile);
-      setPipelineMeta(pipeline);
+            let pipelineRaw: any = null;
+      let pipelineNorm: PipelineNormalized = {};
+      try {
+        pipelineRaw = await runInvoicePipeline(text, downloadedFile);
+        pipelineNorm = enforcePolicy(normalizePipeline(pipelineRaw));
+        setPipelineMeta({ ...pipelineRaw, ...pipelineNorm });
+      } catch (e) {
+        console.warn('process-invoice pipeline failed for Drive file, falling back to heuristic extraction:', e);
+        setPipelineMeta(null);
+      }
+
       const aiExtractedData = await extractInvoiceDataFree(text, downloadedFile.name);
+
       const merged: ExtractedData = {
-        vendor_name: pipeline.vendor_name ?? aiExtractedData.vendor_name,
-        invoice_number: pipeline.invoice_number ?? aiExtractedData.invoice_number,
-        invoice_date: pipeline.invoice_date ?? aiExtractedData.invoice_date,
-        total_amount: pipeline.total_amount != null ? String(pipeline.total_amount) : aiExtractedData.total_amount,
-        tax_amount: pipeline.tax_amount != null ? String(pipeline.tax_amount) : aiExtractedData.tax_amount,
-        currency: pipeline.currency ?? aiExtractedData.currency,
+        vendor_name: (pipelineNorm.vendor_name as string) ?? aiExtractedData.vendor_name,
+        invoice_number: (pipelineNorm.invoice_number as string) ?? aiExtractedData.invoice_number,
+        invoice_date: (pipelineNorm.invoice_date as string) ?? aiExtractedData.invoice_date,
+        total_amount:
+          pipelineNorm.total_amount != null ? String(pipelineNorm.total_amount) : aiExtractedData.total_amount,
+        tax_amount:
+          pipelineNorm.tax_amount != null ? String(pipelineNorm.tax_amount) : aiExtractedData.tax_amount,
+        currency: (pipelineNorm.currency as string) ?? aiExtractedData.currency,
       };
 
       setProcessingSteps((prev) =>
@@ -756,9 +976,7 @@ export default function UploadInvoice() {
     try {
       setGmailLoading(true);
 
-      const { data, error } = await supabase.functions.invoke('gmail-list', {
-        body: { providerToken, maxResults: 20 },
-      });
+      const { data, error } = await invokeAuthed('gmail-list', { providerToken, maxResults: 20 });
 
       if (error) throw error;
 
@@ -824,15 +1042,13 @@ export default function UploadInvoice() {
     ]);
 
     try {
-      const { data, error } = await supabase.functions.invoke('gmail-download-attachment', {
-        body: {
+      const { data, error } = await invokeAuthed('gmail-download-attachment', {
           providerToken,
           messageId: msg.id,
           attachmentId: att.attachmentId,
           filename: att.filename,
           mimeType: att.mimeType,
-        },
-      });
+        });
 
       if (error) throw error;
       if (!data?.base64) throw new Error('Gmail download failed: missing base64');
@@ -864,18 +1080,28 @@ export default function UploadInvoice() {
         prev.map((s, i) => (i === 1 ? { ...s, status: 'complete' } : i === 2 ? { ...s, status: 'processing' } : s)),
       );
 
-      const aiExtractedData = await extractInvoiceDataFree(text, downloadedFile.name);
+            const aiExtractedData = await extractInvoiceDataFree(text, downloadedFile.name);
 
-      const pipeline = await runInvoicePipeline(text, downloadedFile);
-      setPipelineMeta(pipeline);
+      let pipelineRaw: any = null;
+      let pipelineNorm: PipelineNormalized = {};
+      try {
+        pipelineRaw = await runInvoicePipeline(text, downloadedFile);
+        pipelineNorm = enforcePolicy(normalizePipeline(pipelineRaw));
+        setPipelineMeta({ ...pipelineRaw, ...pipelineNorm });
+      } catch (e) {
+        console.warn('process-invoice pipeline failed for Gmail attachment, falling back to heuristic extraction:', e);
+        setPipelineMeta(null);
+      }
 
       const merged: ExtractedData = {
-        vendor_name: pipeline.vendor_name ?? aiExtractedData.vendor_name,
-        invoice_number: pipeline.invoice_number ?? aiExtractedData.invoice_number,
-        invoice_date: pipeline.invoice_date ?? aiExtractedData.invoice_date,
-        total_amount: pipeline.total_amount != null ? String(pipeline.total_amount) : aiExtractedData.total_amount,
-        tax_amount: pipeline.tax_amount != null ? String(pipeline.tax_amount) : aiExtractedData.tax_amount,
-        currency: pipeline.currency ?? aiExtractedData.currency,
+        vendor_name: (pipelineNorm.vendor_name as string) ?? aiExtractedData.vendor_name,
+        invoice_number: (pipelineNorm.invoice_number as string) ?? aiExtractedData.invoice_number,
+        invoice_date: (pipelineNorm.invoice_date as string) ?? aiExtractedData.invoice_date,
+        total_amount:
+          pipelineNorm.total_amount != null ? String(pipelineNorm.total_amount) : aiExtractedData.total_amount,
+        tax_amount:
+          pipelineNorm.tax_amount != null ? String(pipelineNorm.tax_amount) : aiExtractedData.tax_amount,
+        currency: (pipelineNorm.currency as string) ?? aiExtractedData.currency,
       };
 
       setProcessingSteps((prev) =>
@@ -1489,7 +1715,56 @@ export default function UploadInvoice() {
               <CardDescription>Verify and correct the extracted information before saving</CardDescription>
             </CardHeader>
 
+            
             <CardContent className="space-y-4">
+              {pipelineMeta && (
+                <Alert>
+                  <AlertDescription className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold">AI Decision:</span>
+                      <span className="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium capitalize">
+                        {String(pipelineMeta.approval || "unknown").replace(/_/g, " ")}
+                      </span>
+                      {pipelineMeta.human_review_required && (
+                        <span className="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium">
+                          Human approval required (&gt; €5000)
+                        </span>
+                      )}
+                      <span className="text-xs text-muted-foreground">
+                        Confidence: {typeof pipelineMeta.approval_confidence === "number" ? pipelineMeta.approval_confidence.toFixed(2) : "—"}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        Evidence: {(pipelineMeta.citations?.length || pipelineMeta.evidence?.length || 0) > 0 ? "yes" : "no"}
+                      </span>
+                    </div>
+
+                    {Array.isArray(pipelineMeta.approval_reasons) && pipelineMeta.approval_reasons.length > 0 && (
+                      <ul className="list-disc pl-5 text-sm">
+                        {pipelineMeta.approval_reasons.slice(0, 6).map((r: string, idx: number) => (
+                          <li key={idx}>{r}</li>
+                        ))}
+                      </ul>
+                    )}
+
+                    {Array.isArray(pipelineMeta.needs_info_fields) && pipelineMeta.needs_info_fields.length > 0 && (
+                      <div className="text-sm">
+                        <span className="font-semibold">Needs info:</span>{" "}
+                        {pipelineMeta.needs_info_fields.join(", ")}
+                      </div>
+                    )}
+
+                    {(Array.isArray(pipelineMeta.citations) && pipelineMeta.citations.length > 0) && (
+                      <details className="mt-1">
+                        <summary className="text-sm font-semibold cursor-pointer">View citations</summary>
+                        <pre className="mt-2 p-3 bg-gray-50 rounded-lg text-xs overflow-auto max-h-40 border">
+{JSON.stringify(pipelineMeta.citations.slice(0, 20), null, 2)}
+                        </pre>
+                      </details>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              )}
+
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="vendor_name">Vendor Name</Label>

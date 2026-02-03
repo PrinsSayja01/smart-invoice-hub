@@ -1,1 +1,3 @@
+# supabase/functions/<function-name>/config.toml
+# Needed so browser CORS preflight (OPTIONS) does NOT get blocked by JWT verification.
 verify_jwt = false

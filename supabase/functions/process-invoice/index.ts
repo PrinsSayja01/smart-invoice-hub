@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.90.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,380 +7,355 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+type Citation = { chunk_id: string; quote: string; start?: number; end?: number };
+type Decision = {
+  status: "PASS" | "FAIL" | "NEEDS_INFO" | "HUMAN_REVIEW";
+  confidence: number;
+  reasons: string[];
+  needs_info_fields: string[];
+  citations: Record<string, Citation[]>;
+};
 
-function classifyDoc(text: string): { doc_class: string; confidence: number; signals: string[] } {
-  const t = (text || "").toLowerCase();
-  const signals: string[] = [];
-
-  const has = (re: RegExp, label: string) => {
-    if (re.test(t)) signals.push(label);
-    return re.test(t);
-  };
-
-  const invoiceSig = [
-    has(/\binvoice\b/, "invoice_keyword"),
-    has(/\bvat\b|\btax\b/, "tax_terms"),
-    has(/\bamount due\b|\bgrand total\b/, "total_terms"),
-  ].filter(Boolean).length;
-
-  const receiptSig = [
-    has(/\breceipt\b/, "receipt_keyword"),
-    has(/\bthank you\b/, "thanks"),
-    has(/\bcashier\b|\bregister\b/, "pos_terms"),
-  ].filter(Boolean).length;
-
-  const offerSig = [
-    has(/\boffer\b|\bquotation\b|\bquote\b/, "offer_terms"),
-    has(/\bvalid until\b|\bquotation no\b/, "offer_validity"),
-  ].filter(Boolean).length;
-
-  const prescriptionSig = [
-    has(/\bprescription\b/, "prescription_keyword"),
-    has(/\bdoctor\b|\bclinic\b|\bpatient\b/, "medical_terms"),
-  ].filter(Boolean).length;
-
-  const sickSig = [
-    has(/\bsick note\b|\bmedical certificate\b/, "sicknote_terms"),
-    has(/\bfit for work\b|\bunfit\b/, "work_fitness"),
-  ].filter(Boolean).length;
-
-  const scores = [
-    { k: "invoice", v: invoiceSig },
-    { k: "receipt", v: receiptSig },
-    { k: "offer", v: offerSig },
-    { k: "prescription", v: prescriptionSig },
-    { k: "sick_note", v: sickSig },
-  ].sort((a, b) => b.v - a.v);
-
-  const top = scores[0];
-  if (!top || top.v === 0) return { doc_class: "other", confidence: 0.3, signals };
-
-  // Simple confidence: 0.55 + 0.15 per signal, capped
-  const confidence = Math.min(0.95, 0.55 + 0.15 * top.v);
-  return { doc_class: top.k, confidence, signals };
+function json(status: number, data: unknown) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
 }
 
-function directionFromText(text: string): { direction: string; confidence: number; signals: string[] } {
-  const t = (text || "").toLowerCase();
-  const signals: string[] = [];
-  const has = (re: RegExp, label: string) => {
-    if (re.test(t)) signals.push(label);
-    return re.test(t);
-  };
-
-  const incoming = [
-    has(/\bbill to\b|\bbilled to\b/, "bill_to"),
-    has(/\bship to\b/, "ship_to"),
-    has(/\bamount due\b|\bpayable\b/, "payable_terms"),
-  ].filter(Boolean).length;
-
-  const outgoing = [
-    has(/\bfrom:\b|\bseller\b|\bsupplier\b/, "supplier_terms"),
-    has(/\byour invoice\b/, "your_invoice"),
-    has(/\bwe have provided\b|\bservices rendered\b/, "rendered_terms"),
-  ].filter(Boolean).length;
-
-  if (incoming === 0 && outgoing === 0) return { direction: "unknown", confidence: 0.4, signals };
-
-  if (incoming >= outgoing) return { direction: "incoming", confidence: Math.min(0.9, 0.6 + 0.1 * incoming), signals };
-  return { direction: "outgoing", confidence: Math.min(0.9, 0.6 + 0.1 * outgoing), signals };
+function nowIso() {
+  return new Date().toISOString();
 }
 
-function fieldConfidence(extracted: any) {
-  // Confidence heuristic: present => higher; looks structured => higher
-  const conf: Record<string, number> = {};
-  const present = (v: any) => (v !== null && v !== undefined && String(v).trim().length > 0);
-
-  conf.vendor_name = present(extracted.vendor_name) ? 0.85 : 0.3;
-  conf.invoice_number = present(extracted.invoice_number) ? (String(extracted.invoice_number).length >= 5 ? 0.8 : 0.6) : 0.25;
-  conf.invoice_date = present(extracted.invoice_date) ? 0.8 : 0.25;
-  conf.total_amount = present(extracted.total_amount) ? 0.85 : 0.2;
-  conf.tax_amount = present(extracted.tax_amount) ? 0.7 : 0.35;
-  conf.currency = present(extracted.currency) ? 0.7 : 0.4;
-
-  return conf;
-}
-
-function taxCompliance(extracted: any, jurisdiction: string) {
-  const issues: any[] = [];
-  const j = (jurisdiction || "").toUpperCase();
-  const total = Number(extracted.total_amount || 0);
-  const tax = Number(extracted.tax_amount || 0);
-
-  // Rough VAT expectations
-  let expectedRange: [number, number] | null = null;
-  if (j === "EU") expectedRange = [0.15, 0.27];
-  if (j === "UAE") expectedRange = [0.05, 0.05];
-  if (j === "KSA") expectedRange = [0.15, 0.15];
-
-  let computedRate: number | null = null;
-  if (total > 0 && tax >= 0) computedRate = tax / total;
-
-  if (expectedRange && computedRate !== null) {
-    const [lo, hi] = expectedRange;
-    if (computedRate < lo - 0.02 || computedRate > hi + 0.02) {
-      issues.push({
-        code: "VAT_RATE_OUT_OF_RANGE",
-        message: `VAT rate ${(computedRate * 100).toFixed(2)}% is outside expected range for ${j}`,
-        severity: "warning",
-      });
+function normalizeInput(body: any) {
+  const b = body || {};
+  const pick = (...keys: string[]) => {
+    for (const k of keys) {
+      const v = b?.[k];
+      if (v !== undefined && v !== null && String(v).trim() !== "") return v;
     }
-  }
-
-  if (j === "EU") {
-    // Basic VAT ID check hint
-    if (!/\bvat\s*(id|no)\b/i.test(String(extracted._raw_text || ""))) {
-      issues.push({ code: "VAT_ID_MISSING", message: "VAT ID not detected (EU).", severity: "info" });
-    }
-  }
-
-  const status =
-    issues.some((x) => x.severity === "error") ? "fail" : issues.some((x) => x.severity === "warning") ? "needs_review" : "pass";
-
-  return { issues, computedRate, status };
-}
-
-function approvalAgent(args: {
-  doc_class: string;
-  field_conf: Record<string, number>;
-  risk_score: string;
-  compliance_status: string;
-}) {
-  const reasons: string[] = [];
-  const needs: string[] = [];
-
-  const mustFields = ["vendor_name", "invoice_number", "invoice_date", "total_amount"];
-  for (const k of mustFields) {
-    if ((args.field_conf[k] ?? 0) < 0.5) needs.push(k);
-  }
-
-  if (args.risk_score === "high") reasons.push("High fraud/anomaly risk detected.");
-  if (args.compliance_status === "fail") reasons.push("Tax/compliance checks failed.");
-  if (args.doc_class !== "invoice" && args.doc_class !== "receipt") reasons.push(`Document classified as ${args.doc_class}.`);
-
-  if (needs.length) {
-    reasons.push("Missing or low-confidence required fields.");
-    return { decision: "needs_info", confidence: 0.65, reasons, needs_info_fields: needs };
-  }
-
-  if (args.risk_score === "high" || args.compliance_status === "fail") {
-    return { decision: "fail", confidence: 0.75, reasons, needs_info_fields: [] };
-  }
-
-  return { decision: "pass", confidence: 0.8, reasons: reasons.length ? reasons : ["All checks passed."], needs_info_fields: [] };
-}
-
-function esgMap(extracted: any) {
-  const vendor = String(extracted.vendor_name || "").toLowerCase();
-  const total = Number(extracted.total_amount || 0);
-
-  let category = "general";
-  let factor = 0.4; // kg CO2e per currency unit (placeholder)
-
-  if (/air|flight|lufthansa|ryanair|wizz|emirates|qatar/.test(vendor)) {
-    category = "travel";
-    factor = 1.2;
-  } else if (/uber|bolt|taxi/.test(vendor)) {
-    category = "transport";
-    factor = 0.8;
-  } else if (/amazon|office|stationery|supplies/.test(vendor)) {
-    category = "office_supplies";
-    factor = 0.3;
-  } else if (/electric|energy|utility/.test(vendor)) {
-    category = "utilities";
-    factor = 0.6;
-  }
-
-  const co2e = total > 0 ? total * factor : null;
-  const confidence = total > 0 ? 0.6 : 0.4;
-
-  return { esg_category: category, co2e_estimate: co2e, emissions_confidence: confidence };
-}
-
-function paymentQR(extracted: any) {
-  // Placeholder QR payload for payment apps. Real EPC/EMV formats can be added later.
-  const payload = {
-    payee: extracted.vendor_name || null,
-    reference: extracted.invoice_number || null,
-    amount: extracted.total_amount ? Number(extracted.total_amount) : null,
-    currency: extracted.currency || null,
+    return undefined;
   };
-  const qrString = JSON.stringify(payload);
-  return { payment_payload: payload, payment_qr_string: qrString };
+
+  return {
+    fileName: String(pick("fileName", "filename", "file_name") || ""),
+    fileType: String(pick("fileType", "mimeType", "file_type") || ""),
+    extractedText: String(pick("extractedText", "text", "ocr_text") || ""),
+    vendor_name: pick("vendor_name", "vendorName", "vrndername", "vendername"),
+    invoice_number: pick("invoice_number", "invoiceNo", "invoiceNumber"),
+    invoice_date: pick("invoice_date", "date", "datte", "invoiceDate"),
+    total_amount: pick("total_amount", "total", "amount", "grand_total"),
+    tax_amount: pick("tax_amount", "vat", "vat_amount", "tax", "taxAmount"),
+    currency: pick("currency", "currncy", "curenvt", "curr", "ccy"),
+    file_id: pick("file_id", "document_id"),
+  };
 }
 
-function pickCurrency(text: string) {
-  if (text.includes("€")) return "EUR";
-  if (text.includes("£")) return "GBP";
-  if (text.includes("$")) return "USD";
+function chunkText(text: string, chunkSize = 800, overlap = 120) {
+  const t = text || "";
+  const chunks: { idx: number; text: string; start: number; end: number }[] = [];
+  let start = 0;
+  let idx = 0;
+  while (start < t.length) {
+    const end = Math.min(t.length, start + chunkSize);
+    chunks.push({ idx, text: t.slice(start, end), start, end });
+    idx += 1;
+    start = Math.max(0, end - overlap);
+    if (start >= t.length) break;
+  }
+  return chunks;
+}
+
+function toNumberLoose(v: any): number | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).replace(/[^\d.,-]/g, "").replace(",", ".");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function detectCurrency(text: string) {
+  const t = (text || "").toLowerCase();
+  if (t.includes("€") || t.includes(" eur")) return "EUR";
+  if (t.includes("$") || t.includes(" usd")) return "USD";
+  if (t.includes("£") || t.includes(" gbp")) return "GBP";
   return "USD";
 }
 
-function toNumber(s: string) {
-  return Number(String(s).replace(/,/g, "").trim());
-}
+function heuristicExtract(text: string) {
+  const t = text || "";
+  const vendor = (t.split("\n").map((l) => l.trim()).find((l) => l.length > 3) || "").slice(0, 80) || null;
 
-function extractInvoice(text: string) {
-  const currency = pickCurrency(text);
-
-  const invoiceNumber =
-    text.match(/(invoice\s*(number|no\.|#)\s*[:\-]?\s*([A-Z0-9\-\/]+))/i)?.[3] ||
-    text.match(/\bINV[-\s]?\d{2,}\b/i)?.[0] ||
+  const invoice_number =
+    t.match(/invoice\s*(number|no\.?|#)\s*[:\-]?\s*([A-Z0-9\-\/]+)/i)?.[2] ||
+    t.match(/\bINV[-\s]?\d+[A-Z0-9\-]*\b/i)?.[0] ||
     null;
 
-  // date patterns
-  let invoiceDate: string | null = null;
-  const ymd = text.match(/\b(20\d{2})[-\/\.](\d{1,2})[-\/\.](\d{1,2})\b/);
-  if (ymd) {
-    const yyyy = ymd[1];
-    const mm = String(ymd[2]).padStart(2, "0");
-    const dd = String(ymd[3]).padStart(2, "0");
-    invoiceDate = `${yyyy}-${mm}-${dd}`;
-  } else {
-    const dmy = text.match(/\b(\d{1,2})[-\/\.](\d{1,2})[-\/\.](20\d{2})\b/);
-    if (dmy) {
-      const dd = String(dmy[1]).padStart(2, "0");
-      const mm = String(dmy[2]).padStart(2, "0");
-      const yyyy = dmy[3];
-      invoiceDate = `${yyyy}-${mm}-${dd}`;
+  const dateRaw =
+    t.match(/invoice\s*date\s*[:\-]?\s*([0-9.\-\/]{8,10})/i)?.[1] ||
+    t.match(/\b(20\d{2}-\d{2}-\d{2})\b/)?.[1] ||
+    t.match(/\b(\d{1,2}[\/.]\d{1,2}[\/.](20\d{2}))\b/)?.[1] ||
+    null;
+
+  let invoice_date: string | null = null;
+  if (dateRaw) {
+    const s = String(dateRaw).trim();
+    const iso = s.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+    if (iso) invoice_date = `${iso[1]}-${iso[2]}-${iso[3]}`;
+    const dot = s.match(/\b(\d{1,2})\.(\d{1,2})\.(20\d{2})\b/);
+    if (!invoice_date && dot) {
+      const dd = String(dot[1]).padStart(2, "0");
+      const mm = String(dot[2]).padStart(2, "0");
+      invoice_date = `${dot[3]}-${mm}-${dd}`;
     }
   }
 
   const totalMatch =
-    text.match(/(total|amount due|grand total)\s*[:\-]?\s*[$€£]?\s*([\d,]+(?:\.\d{1,2})?)/i) ||
-    text.match(/[$€£]\s*([\d,]+(?:\.\d{1,2})?)/);
-
-  const taxMatch =
-    text.match(/(tax|vat)\s*[:\-]?\s*[$€£]?\s*([\d,]+(?:\.\d{1,2})?)/i) || null;
-
-  const totalAmount = totalMatch ? toNumber(totalMatch[2] ?? totalMatch[1]) : null;
-  const taxAmount = taxMatch ? toNumber(taxMatch[2]) : null;
-
-  // vendor guess: first non-empty line
-  const firstLine = text.split("\n").map((l) => l.trim()).find((l) => l.length > 3) ?? "";
-  const vendorName =
-    text.match(/vendor\s*[:\-]\s*(.+)/i)?.[1]?.trim() ||
-    text.match(/from\s*[:\-]\s*(.+)/i)?.[1]?.trim() ||
-    (firstLine.length < 60 ? firstLine : null);
-
-  let invoiceType: string = "other";
-  const lower = text.toLowerCase();
-  if (lower.includes("service") || lower.includes("consulting")) invoiceType = "services";
-  else if (lower.includes("product") || lower.includes("item") || lower.includes("qty")) invoiceType = "goods";
+    t.match(/\b(total\s*(amount)?|grand\s*total|amount\s*due)\s*[:\-]?\s*([$€£]?\s*[0-9][0-9.,]+)/i)?.[3] || null;
+  const taxMatch = t.match(/\b(vat|tax)\s*(amount)?\s*[:\-]?\s*([$€£]?\s*[0-9][0-9.,]+)/i)?.[3] || null;
 
   return {
-    vendor_name: vendorName || null,
-    invoice_number: invoiceNumber,
-    invoice_date: invoiceDate,
-    total_amount: totalAmount,
-    tax_amount: taxAmount,
-    currency,
-    invoice_type: invoiceType,
-    language: "en",
+    vendor_name: vendor,
+    invoice_number,
+    invoice_date,
+    total_amount: totalMatch ? toNumberLoose(totalMatch) : null,
+    tax_amount: taxMatch ? toNumberLoose(taxMatch) : null,
+    currency: detectCurrency(t),
   };
 }
 
+async function hfEmbed(texts: string[]) {
+  const token = Deno.env.get("HF_API_TOKEN") || "";
+  const model = Deno.env.get("HF_EMBEDDING_MODEL") || "sentence-transformers/all-MiniLM-L6-v2";
+  if (!token) throw new Error("HF_API_TOKEN missing");
+
+  const url = `https://api-inference.huggingface.co/pipeline/feature-extraction/${model}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ inputs: texts, options: { wait_for_model: true } }),
+  });
+
+  if (!res.ok) throw new Error(`HF embeddings failed: ${res.status} ${await res.text()}`);
+  const data = await res.json();
+  const out: number[][] = Array.isArray(data) ? data : [];
+  return out.map((v) => (Array.isArray(v) ? v.map((x) => Number(x)) : []));
+}
+
+async function logAudit(supabase: any, user_id: string, document_id: string, step: string, payload: any) {
+  await supabase.from("audit_logs").insert({ user_id, document_id, step, payload, created_at: nowIso() });
+}
+
+async function debit(supabase: any, user_id: string, document_id: string, action: string, credits: number) {
+  await supabase.from("ai_ledger").insert({ user_id, document_id, action, credits, created_at: nowIso() });
+  await supabase.rpc("debit_ai_wallet", { p_user_id: user_id, p_credits: credits });
+}
+
+function requireEvidence(citations: Record<string, Citation[]>, field: string) {
+  return Array.isArray(citations[field]) && citations[field].length > 0;
+}
+
+function confidenceFromEvidence(citations: Record<string, Citation[]>, requiredFields: string[]) {
+  const have = requiredFields.filter((f) => requireEvidence(citations, f)).length;
+  return requiredFields.length ? have / requiredFields.length : 0;
+}
+
+function policyChecks(extracted: any) {
+  const reasons: string[] = [];
+  const vendor = String(extracted.vendor_name || "").toLowerCase();
+  const suspicious = ["scam", "fraud", "test vendor", "unknown vendor inc"];
+  if (suspicious.some((x) => vendor.includes(x))) reasons.push("Suspicious vendor detected.");
+
+  const total = Number(extracted.total_amount ?? 0);
+  const tax = Number(extracted.tax_amount ?? 0);
+  if (total > 0 && tax > total) reasons.push("VAT/Tax is greater than Total (invalid).");
+
+  return reasons;
+}
+
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return json(405, { error: "Method not allowed" });
 
   try {
-    const body = await req.json();
-    const { fileName, fileType, extractedText, jurisdiction, companyName } = body;
+    const authHeader = req.headers.get("Authorization") || "";
+    if (!authHeader) return json(401, { error: "Missing Authorization header" });
 
-    if (!fileName || !fileType || !extractedText) {
-      return new Response(JSON.stringify({ error: "Missing fileName, fileType, or extractedText" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_ANON_KEY") ?? "",
+      { global: { headers: { Authorization: authHeader } } },
+    );
+
+    const { data: userRes } = await supabase.auth.getUser();
+    if (!userRes?.user) return json(401, { error: "Unauthorized" });
+    const user_id = userRes.user.id;
+
+    const body = normalizeInput(await req.json().catch(() => ({})));
+    if (!body.extractedText) return json(400, { error: "Missing extractedText" });
+
+    // Create doc row
+    let document_id = String(body.file_id || "").trim();
+    if (!document_id) {
+      const ins = await supabase
+        .from("documents")
+        .insert({
+          user_id,
+          file_name: body.fileName || "unknown",
+          file_type: body.fileType || "text/plain",
+          created_at: nowIso(),
+        })
+        .select("id")
+        .single();
+
+      if (ins.error || !ins.data?.id) return json(500, { error: ins.error?.message || "Failed to create document" });
+      document_id = ins.data.id;
     }
 
-    const extracted = extractInvoice(String(extractedText));
+    await logAudit(supabase, user_id, document_id, "ingest", { fileName: body.fileName, fileType: body.fileType });
 
-    // Advanced classification & scoring
-    const rawText = String(extractedText);
-    (extracted as any)._raw_text = rawText;
+    // Chunk + embed + store
+    const chunks = chunkText(body.extractedText);
+    await debit(supabase, user_id, document_id, "chunk", 1);
 
-    const doc = classifyDoc(rawText);
-    const dir = directionFromText(rawText);
-    const field_conf = fieldConfidence(extracted);
+    const embeddings: number[][] = [];
+    const batchSize = 10;
 
-    const inferredJurisdiction =
-      (jurisdiction && String(jurisdiction).trim()) ||
-      (extracted.currency === "EUR" ? "EU" : extracted.currency === "AED" ? "UAE" : extracted.currency === "SAR" ? "KSA" : "EU");
-
-    const compliance2 = taxCompliance({ ...extracted, _raw_text: rawText }, String(inferredJurisdiction));
-
-    const esg = esgMap(extracted);
-    const pay = paymentQR(extracted);
-
-    // Fraud checks
-    const anomalies: string[] = [];
-    let risk_score: "low" | "medium" | "high" = "low";
-    if ((extracted.total_amount ?? 0) > 25000) risk_score = "medium";
-    if ((extracted.total_amount ?? 0) > 40000) {
-      risk_score = "high";
-      anomalies.push("Unusually high amount");
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      await debit(supabase, user_id, document_id, "embed", 2);
+      const batch = chunks.slice(i, i + batchSize);
+      const embs = await hfEmbed(batch.map((c) => c.text));
+      embeddings.push(...embs);
     }
 
-    // Compliance
-    let compliance_status: "compliant" | "needs_review" = "compliant";
-    if (!extracted.tax_amount || extracted.tax_amount <= 0) compliance_status = "needs_review";
+    const rows = chunks.map((c, i) => ({
+      document_id,
+      chunk_index: c.idx,
+      content: c.text,
+      start_offset: c.start,
+      end_offset: c.end,
+      embedding: embeddings[i],
+      created_at: nowIso(),
+    }));
 
+    const up = await supabase.from("document_chunks").upsert(rows, { onConflict: "document_id,chunk_index" });
+    if (up.error) return json(500, { error: up.error.message });
 
-    const approval = approvalAgent({
-      doc_class: doc.doc_class,
-      field_conf,
-      risk_score,
-      compliance_status: compliance2.status === "pass" ? "compliant" : compliance2.status === "fail" ? "fail" : "needs_review",
-    });
+    await logAudit(supabase, user_id, document_id, "chunk_store", { chunks: rows.length });
 
-    const result = {
-      ...extracted,
-      doc_class: doc.doc_class,
-      doc_class_confidence: doc.confidence,
-      doc_class_signals: doc.signals,
-      direction: dir.direction,
-      direction_confidence: dir.confidence,
-      direction_signals: dir.signals,
-      field_confidence: field_conf,
-      jurisdiction: inferredJurisdiction,
-      compliance_issues: compliance2.issues,
-      vat_rate: compliance2.computedRate,
-      vat_amount_computed: extracted.total_amount && compliance2.computedRate ? Number(extracted.total_amount) * compliance2.computedRate : null,
-      fraud_score: risk_score === "high" ? 0.9 : risk_score === "medium" ? 0.6 : 0.2,
-      anomaly_flags: anomalies,
-      approval: approval.decision,
-      approval_confidence: approval.confidence,
-      approval_reasons: approval.reasons,
-      needs_info_fields: approval.needs_info_fields,
-      category: esg.esg_category,
-      esg_category: esg.esg_category,
-      co2e_estimate: esg.co2e_estimate,
-      emissions_confidence: esg.emissions_confidence,
-      payment_payload: pay.payment_payload,
-      payment_qr_string: pay.payment_qr_string,
-      ingestion: { valid: true, fileType, fileName, timestamp: new Date().toISOString() },
-      fraud_detection: { risk_score, is_duplicate: false, anomalies, checked_at: new Date().toISOString() },
-      compliance: {
-        compliance_status,
-        vat_valid: compliance_status === "compliant",
-        tax_classification: extracted.invoice_type === "services" ? "Service Tax" : "Goods Tax",
-        checked_at: new Date().toISOString(),
-      },
-      risk_score,
-      compliance_status,
-      is_flagged: risk_score === "high",
-      flag_reason: anomalies.length ? anomalies.join(", ") : null,
+    // Retrieval + citations
+    const queries = {
+      vendor_name: "vendor name supplier seller from",
+      invoice_number: "invoice number invoice no inv #",
+      invoice_date: "invoice date date issued",
+      total_amount: "total amount grand total amount due",
+      tax_amount: "vat tax amount mwst",
+      currency: "currency eur usd gbp € $ £",
     };
 
-    return new Response(JSON.stringify(result), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    const citations: Record<string, Citation[]> = {};
+    const extracted = heuristicExtract(body.extractedText);
+
+    // Override with provided values (but still require evidence!)
+    if (body.vendor_name) extracted.vendor_name = String(body.vendor_name);
+    if (body.invoice_number) extracted.invoice_number = String(body.invoice_number);
+    if (body.invoice_date) extracted.invoice_date = String(body.invoice_date);
+    if (body.total_amount !== undefined) extracted.total_amount = toNumberLoose(body.total_amount);
+    if (body.tax_amount !== undefined) extracted.tax_amount = toNumberLoose(body.tax_amount);
+    if (body.currency) extracted.currency = String(body.currency);
+
+    for (const [field, q] of Object.entries(queries)) {
+      await debit(supabase, user_id, document_id, "retrieve", 1);
+      const qEmb = (await hfEmbed([q]))[0];
+
+      const { data, error } = await supabase.rpc("match_document_chunks", {
+        p_document_id: document_id,
+        p_query_embedding: qEmb,
+        p_match_count: 4,
+      });
+
+      if (error) return json(500, { error: error.message });
+
+      const matches: any[] = Array.isArray(data) ? data : [];
+      citations[field] = matches.map((m) => ({
+        chunk_id: String(m.id),
+        quote: String(m.content).slice(0, 240),
+        start: m.start_offset,
+        end: m.end_offset,
+      }));
+    }
+
+    await logAudit(supabase, user_id, document_id, "retrieval", {
+      citations_count: Object.fromEntries(Object.entries(citations).map(([k, v]) => [k, v.length])),
     });
+
+    // Decision rules
+    const requiredForPass = ["vendor_name", "invoice_number", "invoice_date", "total_amount"];
+    const reasons: string[] = [];
+    const needs_info_fields: string[] = [];
+
+    // 1) No evidence -> cannot PASS
+    for (const f of requiredForPass) {
+      if (!requireEvidence(citations, f)) needs_info_fields.push(f);
+    }
+
+    // 10) Missing VAT -> NEEDS_INFO
+    const vatVal = Number(extracted.tax_amount ?? 0);
+    if (!requireEvidence(citations, "tax_amount") || !vatVal || vatVal <= 0) {
+      if (!needs_info_fields.includes("tax_amount")) needs_info_fields.push("tax_amount");
+      reasons.push("VAT information missing or invalid.");
+    }
+
+    // 8) > €5000 -> human approval required
+    const total = Number(extracted.total_amount ?? 0);
+    const currency = String(extracted.currency || "USD");
+    if (currency === "EUR" && total > 5000) reasons.push("Invoice > €5000 requires mandatory human approval.");
+
+    // 3) Policy violation -> FAIL
+    const policyViolations = policyChecks(extracted);
+    if (policyViolations.length) reasons.push(...policyViolations);
+
+    // 2) Low confidence -> NEEDS_INFO
+    const evidenceCoverage = confidenceFromEvidence(citations, requiredForPass);
+    const confidence = Math.round((0.4 + 0.6 * evidenceCoverage) * 100) / 100;
+    const LOW_CONF_THRESHOLD = Number(Deno.env.get("LOW_CONF_THRESHOLD") || "0.75");
+
+    let status: Decision["status"] = "NEEDS_INFO";
+
+    if (policyViolations.length) {
+      status = "FAIL";
+    } else if (currency === "EUR" && total > 5000) {
+      status = "HUMAN_REVIEW";
+    } else if (confidence < LOW_CONF_THRESHOLD) {
+      status = "NEEDS_INFO";
+      reasons.push("Low confidence: need more information.");
+    } else if (needs_info_fields.length) {
+      status = "NEEDS_INFO";
+      reasons.push("Missing document evidence for required fields.");
+    } else {
+      status = "PASS";
+      reasons.push("All required fields supported by document evidence.");
+    }
+
+    const decision: Decision = { status, confidence, reasons, needs_info_fields, citations };
+
+    // 5) audit_logs + decisions table
+    const decIns = await supabase.from("decisions").insert({
+      user_id,
+      document_id,
+      status: decision.status,
+      confidence: decision.confidence,
+      reasons: decision.reasons,
+      needs_info_fields: decision.needs_info_fields,
+      citations: decision.citations,
+      extracted,
+      created_at: nowIso(),
+    });
+    if (decIns.error) return json(500, { error: decIns.error.message });
+
+    await logAudit(supabase, user_id, document_id, "decision", decision);
+
+    return json(200, { document_id, ...extracted, decision, citations });
   } catch (e: any) {
-    return new Response(JSON.stringify({ error: e?.message || "Unknown error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return json(500, { error: e?.message || "Unknown error" });
   }
 });
