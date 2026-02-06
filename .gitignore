@@ -29,3 +29,4 @@ dist-ssr
 .supabase/
 # Vite cache
 .vite/
+.venv/
