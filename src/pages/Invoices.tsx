@@ -34,18 +34,42 @@ interface Invoice {
   is_flagged: boolean;
   flag_reason: string | null;
 
+  // Approval/workflow (align with DB enum)
+  approval?: "pass" | "fail" | "needs_info" | "human_approval" | null;
+  approval_confidence?: number | null;
+  needs_human_approval?: boolean | null;
+
   created_at: string;
 }
 
 export default function Invoices() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const invokeAuthed = async <T,>(fn: string, body?: unknown, method: string = "POST") => {
+    const { data: s, error: sErr } = await supabase.auth.getSession();
+    if (sErr) return { data: null as any, error: sErr };
+
+    const token = s.session?.access_token;
+    if (!token) return { data: null as any, error: new Error("Not authenticated. Please sign in again.") };
+
+    const { data, error } = await supabase.functions.invoke(fn, {
+      method,
+      body,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        authorization: `Bearer ${token}`,
+      },
+    });
+
+    return { data: data as T, error };
+  };
+
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [view, setView] = useState<"all" | "flagged" | "needs_approval" | "needs_info">("all");
+  const [view, setView] = useState<"all" | "flagged" | "human_approval" | "needs_info">("all");
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [savingApproval, setSavingApproval] = useState(false);
@@ -62,7 +86,7 @@ export default function Invoices() {
     const needsInfo = searchParams.get("needsInfo");
 
     if (flagged === "1") setView("flagged");
-    else if (needsApproval === "1") setView("needs_approval");
+    else if (needsApproval === "1") setView("human_approval");
     else if (needsInfo === "1") setView("needs_info");
     else setView("all");
   }, [searchParams]);
@@ -114,30 +138,30 @@ export default function Invoices() {
     }
   };
 
-  const setApproval = async (invoiceId: string, status: "pass" | "fail" | "needs_info" | "pending") => {
+  // approval values must match your DB enum (recommended: pass | fail | needs_info | human_approval)
+  const setApproval = async (
+    invoiceId: string,
+    status: "pass" | "fail" | "needs_info" | "human_approval",
+  ) => {
     try {
       setSavingApproval(true);
-      const reasons = status === "needs_info" ? (selectedInvoice as any)?.needs_info_fields ?? ["missing_fields"] : [];
-      const { data, error } = await supabase.functions.invoke("set-approval", {
-        body: { invoiceId, status, reasons },
-      });
-      if (error) throw error;
+
+      const reasons =
+        status === "needs_info"
+          ? ((selectedInvoice as any)?.needs_info_fields as string[] | undefined) ?? ["missing_fields"]
+          : status === "fail"
+          ? ((selectedInvoice as any)?.approval_reasons as string[] | undefined) ?? ["policy_violation"]
+          : [];
+
+      await invokeAuthed("set-approval", { invoiceId, status, reasons });
 
       // Optimistically update list + selected invoice
-      setInvoices((prev) =>
-        prev.map((inv) => (inv.id === invoiceId ? ({ ...inv, approval: status } as any) : inv)),
-      );
+      setInvoices((prev) => prev.map((inv) => (inv.id === invoiceId ? { ...inv, approval: status } : inv)));
       setSelectedInvoice((prev) => (prev && prev.id === invoiceId ? ({ ...prev, approval: status } as any) : prev));
 
-      toast({ title: "Approval updated", description: `Marked as ${status.replace('_', ' ')}` });
-      return data;
+      toast({ title: "Updated", description: `Invoice status set to ${status}.` });
     } catch (e: any) {
-      console.error(e);
-      toast({
-        variant: "destructive",
-        title: "Could not update approval",
-        description: e?.message || "Unknown error",
-      });
+      toast({ variant: "destructive", title: "Approval update failed", description: e?.message || "Unknown error" });
     } finally {
       setSavingApproval(false);
     }
@@ -149,7 +173,7 @@ export default function Invoices() {
 
     if (view === "flagged") {
       list = list.filter((i) => !!i.is_flagged);
-    } else if (view === "needs_approval") {
+    } else if (view === "human_approval") {
       list = list.filter(
         (i) =>
           !!i.needs_human_approval ||
@@ -247,22 +271,18 @@ export default function Invoices() {
   };
 
   const viewCounts = useMemo(() => {
-    const flagged = invoices.filter((i) => !!i.is_flagged).length;
-    const needsApproval = invoices.filter((i) => {
-      const eur = (i.currency || "").toUpperCase() === "EUR";
-      const amt = Number(i.total_amount ?? 0);
-      return !!(i.needs_human_approval || (eur && amt > 5000));
-    }).length;
-    const needsInfo = invoices.filter((i) =>
-      ["needs_info", "needs_review", "unknown"].includes(String(i.approval || "").toLowerCase()),
+    const flagged = invoices.filter((i) => i.is_flagged).length;
+    const needsInfo = invoices.filter((i) => i.approval === "needs_info").length;
+    const humanApproval = invoices.filter((i) =>
+      Boolean(
+        (i.approval === "human_approval") ||
+          i.needs_human_approval ||
+          ((i.currency === "EUR" || i.currency === "€") && (i.total_amount ?? 0) > 5000),
+      ),
     ).length;
-
-    return {
-      all: invoices.length,
-      flagged,
-      needsApproval,
-      needsInfo,
-    };
+    const duplicates = invoices.filter((i) => Boolean((i as any).is_duplicate)).length;
+    const all = invoices.length;
+    return { all, flagged, needsInfo, humanApproval, duplicates };
   }, [invoices]);
 
   const setViewAndParams = (next: typeof view) => {
@@ -272,7 +292,7 @@ export default function Invoices() {
     params.delete("needsApproval");
     params.delete("needsInfo");
     if (next === "flagged") params.set("flagged", "1");
-    if (next === "needs_approval") params.set("needsApproval", "1");
+    if (next === "human_approval") params.set("needsApproval", "1");
     if (next === "needs_info") params.set("needsInfo", "1");
     setSearchParams(params, { replace: true });
   };
@@ -317,10 +337,10 @@ export default function Invoices() {
           </Button>
           <Button
             size="sm"
-            variant={view === "needs_approval" ? "default" : "outline"}
-            onClick={() => setViewAndParams("needs_approval")}
+            variant={view === "human_approval" ? "default" : "outline"}
+            onClick={() => setViewAndParams("human_approval")}
           >
-            Human approval <span className="ml-2 opacity-80">({viewCounts.needsApproval})</span>
+            Human approval <span className="ml-2 opacity-80">({viewCounts.humanApproval})</span>
           </Button>
           <Button
             size="sm"
@@ -418,7 +438,7 @@ export default function Invoices() {
                             }
                             className="capitalize"
                           >
-                            {String((invoice as any).approval || "pending").replace("_", " ")}
+                            {String((invoice as any).approval || "needs_info").replace("_", " ")}
                           </Badge>
                         </TableCell>
 
@@ -544,7 +564,7 @@ export default function Invoices() {
                     }
                     className="capitalize"
                   >
-                    Approval: {String((selectedInvoice as any).approval || "pending").replace("_", " ")}
+                    Approval: {String((selectedInvoice as any).approval || "needs_info").replace("_", " ")}
                   </Badge>
                 </div>
 

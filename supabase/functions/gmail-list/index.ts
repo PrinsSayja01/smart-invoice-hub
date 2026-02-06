@@ -4,13 +4,7 @@ function getHeader(headers: any[], name: string) {
   return headers?.find((h) => String(h.name).toLowerCase() === name.toLowerCase())?.value ?? null;
 }
 
-type GmailAttachment = {
-  filename: string;
-  mimeType: string;
-  attachmentId: string;
-  size?: number;
-};
-
+type GmailAttachment = { filename: string; mimeType: string; attachmentId: string; size?: number };
 type GmailMessage = {
   id: string;
   threadId?: string;
@@ -40,9 +34,7 @@ function collectAttachments(payload: any, out: GmailAttachment[] = []) {
 
 Deno.serve(async (req) => {
   try {
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { headers: corsHeaders });
-    }
+    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
     const { providerToken, maxResults = 20 } = await req.json().catch(() => ({}));
     if (!providerToken) {
@@ -53,14 +45,11 @@ Deno.serve(async (req) => {
     }
 
     const q = "newer_than:90d has:attachment (filename:pdf OR filename:png OR filename:jpg OR filename:jpeg)";
-
-    const listUrl =
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${encodeURIComponent(
-        String(maxResults),
-      )}&q=${encodeURIComponent(q)}`;
+    const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${encodeURIComponent(
+      String(maxResults),
+    )}&q=${encodeURIComponent(q)}`;
 
     const listResp = await fetch(listUrl, { headers: { Authorization: `Bearer ${providerToken}` } });
-
     const listText = await listResp.text();
     if (!listResp.ok) {
       return new Response(JSON.stringify({ error: "Gmail list failed", status: listResp.status, details: listText }), {
@@ -73,7 +62,6 @@ Deno.serve(async (req) => {
     const ids: string[] = (listJson.messages ?? []).map((m: any) => m.id);
 
     const messages: GmailMessage[] = [];
-
     for (const id of ids) {
       const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`;
       const msgResp = await fetch(msgUrl, { headers: { Authorization: `Bearer ${providerToken}` } });

@@ -22,54 +22,65 @@ Deno.serve(async (req) => {
     const authHeader = req.headers.get("Authorization") || "";
     if (!authHeader) return json(401, { error: "Missing Authorization header" });
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-    if (!supabaseUrl || !supabaseAnonKey) {
-      return json(500, { error: "Missing SUPABASE_URL/SUPABASE_ANON_KEY env vars" });
-    }
-
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
-
-    const { data: userRes, error: userErr } = await supabase.auth.getUser();
-    if (userErr || !userRes?.user) return json(401, { error: "Invalid token" });
-    const userId = userRes.user.id;
-
     const body = (await req.json().catch(() => ({}))) as Body;
     const invoiceId = String(body.invoiceId || "").trim();
-    const status = body.status || "pending";
-    const reasons = Array.isArray(body.reasons) ? body.reasons : [];
+    const status = body.status;
 
     if (!invoiceId) return json(400, { error: "Missing invoiceId" });
-    if (!["pass", "fail", "needs_info", "pending"].includes(status)) {
-      return json(400, { error: "Invalid status" });
-    }
+    if (!status) return json(400, { error: "Missing status" });
 
-    const { data: inv, error: invErr } = await supabase
+    const allowed = new Set(["pass", "fail", "needs_info", "pending"]);
+    if (!allowed.has(status)) return json(400, { error: "Invalid status" });
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+
+    // 1) Verify user (RLS-safe)
+    const supabaseUser = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: u } = await supabaseUser.auth.getUser();
+    if (!u?.user) return json(401, { error: "Unauthorized" });
+    const userId = u.user.id;
+
+    // 2) Use service role for DB writes (avoids RLS update errors)
+    const db = createClient(supabaseUrl, serviceKey || anonKey);
+
+    // Check invoice ownership
+    const { data: inv, error: invErr } = await db
       .from("invoices")
-      .select("id,user_id")
+      .select("id,user_id,approval,is_duplicate")
       .eq("id", invoiceId)
       .single();
+
     if (invErr || !inv) return json(404, { error: "Invoice not found" });
     if (inv.user_id !== userId) return json(403, { error: "Forbidden" });
 
-    const { error: histErr } = await supabase.from("approvals").insert({
-      invoice_id: invoiceId,
-      user_id: userId,
-      status,
-      reasons,
-    });
-    
-    if (histErr) return json(400, { error: histErr.message });
-
-    const { error: updErr } = await supabase
+    // ✅ Update correct column: approval
+    const { error: updErr } = await db
       .from("invoices")
-      .update({ approval: status, approval_reasons: reasons, updated_at: new Date().toISOString() })
+      .update({
+        approval: status,
+        updated_at: new Date().toISOString(),
+        is_flagged: status === "fail" ? true : undefined,
+      })
       .eq("id", invoiceId);
+
     if (updErr) return json(400, { error: updErr.message });
 
-    return json(200, { ok: true, invoiceId, status, reasons });
+    // Optional: save action log if you have table (ignore if missing)
+    try {
+      await db.from("audit_logs").insert({
+        user_id: userId,
+        invoice_id: invoiceId,
+        event_type: "approval_action",
+        payload: { status, reasons: body.reasons ?? [] },
+        created_at: new Date().toISOString(),
+      });
+    } catch (_e) {}
+
+    return json(200, { ok: true, invoiceId, status, reasons: body.reasons ?? [] });
   } catch (e) {
     return json(500, { error: "set-approval crashed", message: String(e) });
   }

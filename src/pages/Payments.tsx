@@ -69,7 +69,7 @@ export default function Payments() {
 
     const { data, error } = await supabase.functions.invoke("generate-qr", {
       body: { invoiceId, method: "sepa" },
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: token ? { Authorization: `Bearer ${token}`, authorization: `Bearer ${token}` } : {},
     });
 
     if (error) {

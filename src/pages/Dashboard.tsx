@@ -26,7 +26,7 @@ type InvoiceRow = {
   currency: string | null;
   is_flagged?: boolean | null;
   flag_reason?: string | null;
-  approval?: string | null; // pass | fail | needs_info | human_required
+  approval?: string | null; // pass | fail | needs_info | human_approval
   approval_reasons?: string[] | null;
   co2e_estimate?: number | null;
 };
@@ -124,7 +124,7 @@ export default function Dashboard() {
         const totalAmt = x.total_amount ?? 0;
         const cur = (x.currency || "").toUpperCase();
         const over5kEUR = cur === "EUR" && toEUR(totalAmt, cur) > 5000;
-        return approval === "human_required" || over5kEUR;
+        return approval === "human_approval" || over5kEUR;
       }).length;
 
       const emissionsTotal = normalized
@@ -146,7 +146,7 @@ export default function Dashboard() {
         .filter((i) => {
           const a = (i.approval || "").toLowerCase();
           const over5k = (i.currency || "").toUpperCase() === "EUR" && (i.total_amount ?? 0) > 5000;
-          return a === "needs_info" || a === "fail" || a === "human_required" || over5k;
+          return a === "needs_info" || a === "fail" || a === "human_approval" || over5k;
         })
         .slice(0, 6),
     [invoices],
@@ -249,7 +249,7 @@ export default function Dashboard() {
           <CardContent className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => goInvoices("?flagged=1")}>Flagged Invoices</Button>
             <Button variant="outline" onClick={() => goInvoices("?approval=human")}>Human Approval</Button>
-            <Button variant="outline" onClick={() => goInvoices("?approval=needs_info")}>Needs Info</Button>
+            <Button variant="outline" onClick={() => goInvoices("?needsInfo=1")}>Needs Info</Button>
             <Button variant="outline" onClick={() => goInvoices("")}>All Invoices</Button>
           </CardContent>
         </Card>
@@ -336,7 +336,7 @@ export default function Dashboard() {
                       </button>
                     );
                   })}
-                  <Button variant="outline" onClick={() => goInvoices("?approval=needs_info")}>View all</Button>
+                  <Button variant="outline" onClick={() => goInvoices("?needsInfo=1")}>View all</Button>
                 </div>
               )}
             </CardContent>

@@ -2,9 +2,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 
 Deno.serve(async (req) => {
   try {
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { headers: corsHeaders });
-    }
+    if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
     const { providerToken, fileId } = await req.json().catch(() => ({}));
     if (!providerToken || !fileId) {
@@ -15,10 +13,7 @@ Deno.serve(async (req) => {
     }
 
     const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`;
-
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${providerToken}` },
-    });
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${providerToken}` } });
 
     if (!resp.ok) {
       const text = await resp.text();
