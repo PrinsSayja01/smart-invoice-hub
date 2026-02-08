@@ -55,18 +55,22 @@ const json = (status: number, data: unknown, extraHeaders: HeadersInit = {}) =>
 const nowIso = () => new Date().toISOString();
 
 // -----------------------------
-// ✅ FX conversion helper (Frankfurter / ECB-based)
+// FX conversion helper (Frankfurter)
 // Caches rates for 12 hours in Edge runtime memory
+// Docs: https://frankfurter.dev
 // -----------------------------
-let _fxCache: { ts: number; base: string; rates: Record<string, number> } | null = null;
+let _fxCache:
+  | { ts: number; base: string; rates: Record<string, number> }
+  | null = null;
 
 async function getFxRates(base = "EUR"): Promise<Record<string, number>> {
   const now = Date.now();
-  if (_fxCache && _fxCache.base === base && now - _fxCache.ts < 12 * 60 * 60 * 1000) return _fxCache.rates;
+  if (_fxCache && _fxCache.base === base && now - _fxCache.ts < 12 * 60 * 60 * 1000) {
+    return _fxCache.rates;
+  }
 
-  // Frankfurter API
-  // If base=EUR => returns rates like { USD: 1.08, GBP: 0.85, ... }
-  const url = `https://api.frankfurter.app/latest?from=${encodeURIComponent(base)}`;
+  // Frankfurter API (latest working day)
+  const url = `https://api.frankfurter.dev/v1/latest?base=${encodeURIComponent(base)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`FX fetch failed: ${res.status}`);
   const data = await res.json();
@@ -84,15 +88,12 @@ async function toEur(amount: number, currency: string): Promise<number | null> {
   if (!cur) return null;
   if (cur === "EUR") return amount;
 
-  // Get rates from EUR -> CUR
-  const rates = await getFxRates("EUR"); // 1 EUR = rates[CUR]
+  // base EUR => rates[CUR] means 1 EUR = rates[CUR] CUR
+  const rates = await getFxRates("EUR");
   const r = Number(rates[cur]);
-
-  // If Frankfurter doesn't have currency
   if (!Number.isFinite(r) || r <= 0) return null;
 
   // amount CUR -> EUR
-  // 1 EUR = r CUR  => 1 CUR = 1/r EUR  => amount CUR = amount/r EUR
   return amount / r;
 }
 
@@ -213,7 +214,7 @@ function buildEvidence(text: string, fields: Record<string, unknown>): { citatio
       const line = lines[i];
       const m = line.match(matcher);
       if (m) {
-        const score = Math.min(1, 0.4 + (m[0].length / 40));
+        const score = Math.min(1, 0.4 + m[0].length / 40);
         if (score > bestScore) {
           bestScore = score;
           bestIdx = i;
@@ -424,7 +425,12 @@ serve(async (req) => {
     const fileType = String(body.fileType || "").trim();
     const extractedText = String(body.extractedText || "").trim();
     if (!fileName || !fileType || !extractedText) {
-      audit.push({ step: "body_invalid", at: nowIso(), ok: false, detail: { fileName, fileType, text_len: extractedText.length } });
+      audit.push({
+        step: "body_invalid",
+        at: nowIso(),
+        ok: false,
+        detail: { fileName, fileType, text_len: extractedText.length },
+      });
       return json(400, { error: "Missing fileName, fileType, or extractedText", audit_steps: audit });
     }
 
@@ -444,20 +450,20 @@ serve(async (req) => {
 
     const jurisdiction =
       String(body.jurisdiction || "").trim() ||
-      (String(fields.currency) === "EUR" ? "EU" : String(fields.currency) === "AED" ? "UAE" : String(fields.currency) === "SAR" ? "KSA" : "EU");
+      (String(fields.currency) === "EUR"
+        ? "EU"
+        : String(fields.currency) === "AED"
+        ? "UAE"
+        : String(fields.currency) === "SAR"
+        ? "KSA"
+        : "EU");
 
     const { citations, evidenceScore } = buildEvidence(extractedText, fields);
     const { field_confidence, overall_confidence } = computeFieldConfidence(fields, citations, vision.field_confidence);
     const checks = policyChecks(fields, jurisdiction, evidenceScore);
 
     const totalNum = toNumber(fields.total_amount) ?? 0;
-    let total_eur: number | null = null;
-    try {
-      total_eur = await toEur(totalNum, String(fields.currency || ""));
-    } catch (e) {
-      audit.push({ step: "fx_failed", at: nowIso(), ok: false, detail: { message: String((e as any)?.message || e) } });
-      total_eur = null;
-    }
+    const total_eur = await toEur(totalNum, String(fields.currency || ""));
     audit.push({ step: "fx_converted", at: nowIso(), ok: true, detail: { total_eur } });
 
     const decision = decide({
@@ -478,7 +484,7 @@ serve(async (req) => {
       currency: fields.currency,
       jurisdiction,
 
-      total_eur, // ✅ for UI + DB
+      total_eur, // ✅ returned to UI + DB
 
       evidence: {
         required_evidence_score: evidenceScore,
@@ -491,10 +497,13 @@ serve(async (req) => {
       needs_info_fields: decision.needs_info_fields,
 
       approval:
-        decision.decision === "PASS" ? "approved" :
-        decision.decision === "FAIL" ? "rejected" :
-        decision.decision === "HUMAN_APPROVAL" ? "human_approval" :
-        "needs_info",
+        decision.decision === "PASS"
+          ? "approved"
+          : decision.decision === "FAIL"
+          ? "rejected"
+          : decision.decision === "HUMAN_APPROVAL"
+          ? "human_approval"
+          : "needs_info",
 
       approval_confidence: decision.confidence,
       approval_reasons: decision.reasons,

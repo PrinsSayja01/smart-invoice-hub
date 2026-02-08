@@ -4,7 +4,13 @@ function getHeader(headers: any[], name: string) {
   return headers?.find((h) => String(h.name).toLowerCase() === name.toLowerCase())?.value ?? null;
 }
 
-type GmailAttachment = { filename: string; mimeType: string; attachmentId: string; size?: number };
+type GmailAttachment = {
+  filename: string;
+  mimeType: string;
+  attachmentId: string;
+  size?: number;
+};
+
 type GmailMessage = {
   id: string;
   threadId?: string;
@@ -51,6 +57,7 @@ Deno.serve(async (req) => {
 
     const listResp = await fetch(listUrl, { headers: { Authorization: `Bearer ${providerToken}` } });
     const listText = await listResp.text();
+
     if (!listResp.ok) {
       return new Response(JSON.stringify({ error: "Gmail list failed", status: listResp.status, details: listText }), {
         status: 502,
@@ -62,6 +69,7 @@ Deno.serve(async (req) => {
     const ids: string[] = (listJson.messages ?? []).map((m: any) => m.id);
 
     const messages: GmailMessage[] = [];
+
     for (const id of ids) {
       const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`;
       const msgResp = await fetch(msgUrl, { headers: { Authorization: `Bearer ${providerToken}` } });

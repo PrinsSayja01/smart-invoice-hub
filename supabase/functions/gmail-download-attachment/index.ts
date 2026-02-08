@@ -23,6 +23,7 @@ Deno.serve(async (req) => {
 
     const resp = await fetch(url, { headers: { Authorization: `Bearer ${providerToken}` } });
     const text = await resp.text();
+
     if (!resp.ok) {
       return new Response(JSON.stringify({ error: "Attachment download failed", status: resp.status, details: text }), {
         status: 502,
@@ -30,13 +31,17 @@ Deno.serve(async (req) => {
       });
     }
 
-    const j = JSON.parse(text);
-    const base64 = base64urlToBase64(j.data ?? "");
+    const json = JSON.parse(text);
+    const base64 = base64urlToBase64(json.data ?? "");
 
-    return new Response(JSON.stringify({ base64, filename: filename ?? "attachment", mimeType: mimeType ?? "application/octet-stream" }), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        base64,
+        filename: filename ?? "attachment",
+        mimeType: mimeType ?? "application/octet-stream",
+      }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   } catch (e) {
     return new Response(JSON.stringify({ error: "gmail-download-attachment crashed", message: String(e) }), {
       status: 500,

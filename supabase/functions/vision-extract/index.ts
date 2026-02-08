@@ -1,14 +1,7 @@
 // supabase/functions/vision-extract/index.ts
-// Vision LLM extraction via Hugging Face Router (OpenAI-compatible Responses API)
-
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-
-const corsHeaders: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, Authorization, apikey, content-type, x-client-info",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+import { corsHeaders } from "../_shared/cors.ts";
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -21,7 +14,9 @@ async function getUserId(req: Request) {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
   const authHeader = req.headers.get("authorization") ?? req.headers.get("Authorization") ?? "";
-  const sb = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
+  const sb = createClient(supabaseUrl, anonKey, {
+    global: { headers: { Authorization: authHeader } },
+  });
   const { data } = await sb.auth.getUser();
   return data.user?.id ?? null;
 }
@@ -53,8 +48,8 @@ Fields:
 {
   "vendor_name": string|null,
   "invoice_number": string|null,
-  "invoice_date": string|null,
-  "currency": string|null,
+  "invoice_date": string|null,  // YYYY-MM-DD if possible
+  "currency": string|null,       // ISO 4217 (EUR, USD...)
   "subtotal_amount": number|null,
   "tax_amount": number|null,
   "total_amount": number|null,
@@ -66,7 +61,7 @@ Fields:
 Rules:
 - Confidence must be 0..1
 - Evidence: include at least one evidence item per extracted field when possible.
-- If cannot find evidence, set field null and confidence low.
+- If you cannot find evidence, set the field to null and confidence low.
 OCR text (may contain errors) is below:\n\n${ocrText.slice(0, 12000)}`;
 
     const payload = {
