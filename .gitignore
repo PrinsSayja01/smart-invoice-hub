@@ -30,3 +30,6 @@ dist-ssr
 # Vite cache
 .vite/
 .venv/
+.venv/
+venv/
+env/
