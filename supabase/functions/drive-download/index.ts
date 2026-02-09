@@ -1,3 +1,4 @@
+// supabase/functions/drive-download/index.ts
 import { corsHeaders } from "../_shared/cors.ts";
 
 Deno.serve(async (req) => {
@@ -13,10 +14,10 @@ Deno.serve(async (req) => {
     }
 
     const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`;
-    const resp = await fetch(url, { headers: { Authorization: `Bearer ${providerToken}` } });
 
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${providerToken}` } });
     if (!resp.ok) {
-      const text = await resp.text();
+      const text = await resp.text().catch(() => "");
       return new Response(JSON.stringify({ error: "Drive download failed", status: resp.status, details: text }), {
         status: 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },

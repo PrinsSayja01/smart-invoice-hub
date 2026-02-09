@@ -1,3 +1,4 @@
+// supabase/functions/gmail-list/index.ts
 import { corsHeaders } from "../_shared/cors.ts";
 
 function getHeader(headers: any[], name: string) {
@@ -51,13 +52,11 @@ Deno.serve(async (req) => {
     }
 
     const q = "newer_than:90d has:attachment (filename:pdf OR filename:png OR filename:jpg OR filename:jpeg)";
-    const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${encodeURIComponent(
-      String(maxResults),
-    )}&q=${encodeURIComponent(q)}`;
+    const listUrl =
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${encodeURIComponent(String(maxResults))}&q=${encodeURIComponent(q)}`;
 
     const listResp = await fetch(listUrl, { headers: { Authorization: `Bearer ${providerToken}` } });
-    const listText = await listResp.text();
-
+    const listText = await listResp.text().catch(() => "");
     if (!listResp.ok) {
       return new Response(JSON.stringify({ error: "Gmail list failed", status: listResp.status, details: listText }), {
         status: 502,

@@ -62,7 +62,8 @@ Rules:
 - Confidence must be 0..1
 - Evidence: include at least one evidence item per extracted field when possible.
 - If you cannot find evidence, set the field to null and confidence low.
-OCR text (may contain errors) is below:\n\n${ocrText.slice(0, 12000)}`;
+File: ${fileName} (${mimeType})
+OCR text (may contain errors) is below:\n\n${String(ocrText || "").slice(0, 12000)}`;
 
     const payload = {
       model,
@@ -103,8 +104,8 @@ OCR text (may contain errors) is below:\n\n${ocrText.slice(0, 12000)}`;
     let parsed: any = null;
     try {
       parsed = JSON.parse(outText);
-    } catch {
-      if (typeof data === "object" && data !== null && data.vendor_name) parsed = data;
+    } catch (_e) {
+      if (typeof data === "object" && data !== null && (data as any).vendor_name) parsed = data;
     }
 
     if (!parsed) {
@@ -112,7 +113,7 @@ OCR text (may contain errors) is below:\n\n${ocrText.slice(0, 12000)}`;
         error: "Model did not return valid JSON",
         raw: outText?.slice?.(0, 4000) || "",
         meta: { fileName, mimeType },
-      });
+      }, 502);
     }
 
     return json(parsed);
